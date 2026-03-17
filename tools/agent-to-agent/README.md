@@ -9,6 +9,9 @@ Sub-agent calls (an agent calling itself) work identically — include the agent
 ## Quick start
 
 ```sh
+# Check your permissions before making any calls
+/tools/bin/agent-to-agent --info
+
 # Start a new conversation with the 'reviewer' agent
 /tools/bin/agent-to-agent --target reviewer Please review the code in /workspace/src/main.ts
 
@@ -48,11 +51,42 @@ Always save the session key. You will need it to ask follow-up questions.
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--target <agent>` | `-t` | **Required.** Name of the agent to invoke. Must be listed in `allowedTargets`. |
+| `--target <agent>` | `-t` | Name of the agent to invoke. Required unless `--info` is used. Must be listed in `allowedTargets`. |
 | `--session <key>` | `-s` | Resume an existing conversation. Omit to start a new session. |
 | `--message-file <path>` | | Read the message body from a file instead of inline args. Useful for long prompts. |
+| `--info` | `-i` | Print a permission summary for the current session and exit. No agent is invoked. |
 
 Positional arguments after all flags are joined as the message.
+
+---
+
+## Discovering your permissions (`--info`)
+
+Before making calls, run `--info` to see exactly what you are allowed to do:
+
+```
+agent-to-agent — permissions for this session
+═══════════════════════════════════════════════
+
+Current agent:  coder
+Current depth:  0
+Max depth:      1
+
+Status: ACTIVE — 1 level(s) of nesting remaining.
+
+Agents you may call (2):
+  • reviewer
+  • coder  (sub-agent)
+
+All configured allowedTargets:
+  coder → reviewer, coder
+  reviewer → coder
+
+Note: sub-agents created by this session will have depth 1.
+Those sub-agents will NOT be able to make further agent-to-agent calls.
+```
+
+`--info` always exits with code 0 and never invokes any agent. It works even when `allowedTargets` is not configured (in which case it reports `DISABLED`) and when the session is at the depth limit (reports `BLOCKED`).
 
 ---
 
@@ -159,9 +193,9 @@ Only agents that have `agent-to-agent` in their `tools` list can invoke the tool
 
 | Error | Cause |
 |---|---|
-| `--target <agent> is required` | No `--target` flag was provided |
+| `--target <agent> is required` | No `--target` flag was provided and `--info` was not used |
 | `No allowedTargets configured` | The config block has no `allowedTargets` key |
-| `Agent 'X' is not permitted to call agent 'Y'` | The caller is not in `allowedTargets` or the target is not in the caller's list |
+| `Agent 'X' is not permitted to call agent 'Y'` | The caller is not in `allowedTargets` or the target is not in the caller's list. Run `--info` to see your permitted targets. |
 | `Agent call depth limit reached` | The calling session is already at `maxDepth` |
 | `Unknown agent 'X'` | The target name is not defined in the beige config |
 | `Session 'X' not found` | `--session` key does not exist in the session map |
