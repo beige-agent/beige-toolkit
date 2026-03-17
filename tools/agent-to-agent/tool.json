@@ -4,7 +4,8 @@
   "commands": [
     "--target <agent>  <message...>              — Start a new conversation with <agent>",
     "--target <agent>  --session <key> <message...> — Continue an existing conversation",
-    "--target <agent>  --session <key> --message-file <path> — Continue with a longer message from a file"
+    "--target <agent>  --session <key> --message-file <path> — Continue with a longer message from a file",
+    "--info                                      — Show which agents you may call and at what depth"
   ],
   "target": "gateway",
   "config": {

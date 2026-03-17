@@ -422,9 +422,6 @@ describe("session management", () => {
 
   it("rejects --session when sessionStore is not available", async () => {
     const am = makeAgentManager();
-    // Use channel as caller identity fallback since there's no sessionStore.
-    // allowedTargets must permit "coder" (resolved via channel fallback) so the
-    // permission check passes and we reach the session store guard.
     const handler = createHandler(
       { allowedTargets: { coder: ["reviewer"] } },
       { agentManagerRef: { current: am } } // no sessionStore
@@ -432,7 +429,7 @@ describe("session management", () => {
     const result = await handler(
       ["--target", "reviewer", "--session", "some-key", "Hi"],
       undefined,
-      { sessionKey: TOP_LEVEL_SESSION, channel: "coder" } // channel used as agent fallback
+      { sessionKey: TOP_LEVEL_SESSION, agentName: "coder" } // agentName is now the identity source
     );
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("session store unavailable");
@@ -546,5 +543,175 @@ describe("agentManager failures", () => {
     });
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain("LLM unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Caller identity — agentName field (new primary source)
+// ---------------------------------------------------------------------------
+
+describe("caller identity resolution", () => {
+  it("uses sessionContext.agentName as primary identity source", async () => {
+    const am = makeAgentManager();
+    // Session store has a DIFFERENT agent name — agentName on sessionContext must win
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: { agentName: "wrong-agent" } });
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] } },
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--target", "reviewer", "Hi"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder", // explicit agentName
+    });
+    expect(result.exitCode).toBe(0); // "coder" is permitted, "wrong-agent" is not
+  });
+
+  it("falls back to session store entry when agentName absent from sessionContext", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY }); // agentName: "coder"
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] } },
+      makeContext(am, ss, makeConfig())
+    );
+    // No agentName in sessionContext — should resolve "coder" from store
+    const result = await handler(["--target", "reviewer", "Hi"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+    });
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("does NOT use channel as agent name fallback", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({}); // no entry
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] } },
+      makeContext(am, ss, makeConfig())
+    );
+    // channel: "tui" — must not be treated as agent name
+    const result = await handler(["--target", "reviewer", "Hi"], undefined, {
+      sessionKey: "tui:coder:default",
+      channel: "tui",
+      // no agentName → falls to "unknown"
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("not permitted"); // "unknown" is not in allowedTargets
+    expect(result.output).not.toContain("'tui' is not permitted"); // error should say "unknown", not "tui"
+  });
+
+  it("resolves correctly from sessionContext.agentName even without session store", async () => {
+    const am = makeAgentManager();
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] } },
+      { agentManagerRef: { current: am } } // no sessionStore, no beigeConfig
+    );
+    const result = await handler(["--target", "reviewer", "Hi"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --info flag
+// ---------------------------------------------------------------------------
+
+describe("--info flag", () => {
+  it("returns exitCode 0 with permission summary", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY });
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer", "coder"] }, maxDepth: 2 },
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("coder");
+    expect(result.output).toContain("reviewer");
+    expect(result.output).toContain("depth");
+  });
+
+  it("shows DISABLED when no allowedTargets configured", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY });
+    const handler = createHandler(
+      {},
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("DISABLED");
+  });
+
+  it("shows BLOCKED when caller is at max depth", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({
+      "a2a:tui:human:default:coder:ts1": { agentName: "coder", metadata: { depth: 1 } },
+    });
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] }, maxDepth: 1 },
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: "a2a:tui:human:default:coder:ts1",
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("BLOCKED");
+    expect(result.output).toContain("maximum allowed depth");
+  });
+
+  it("shows BLOCKED when caller not in allowedTargets map", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY });
+    const handler = createHandler(
+      { allowedTargets: { reviewer: ["coder"] } }, // coder not in map
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("BLOCKED");
+    expect(result.output).toContain("no permitted targets");
+  });
+
+  it("marks self-call targets as sub-agent", async () => {
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY });
+    const handler = createHandler(
+      { allowedTargets: { coder: ["coder", "reviewer"] } },
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("sub-agent");
+  });
+
+  it("works without --target (--info is standalone)", async () => {
+    // Previously the tool would error because no --target was given.
+    // --info must work without --target.
+    const am = makeAgentManager();
+    const ss = makeSessionStore({ [TOP_LEVEL_SESSION]: TOP_LEVEL_ENTRY });
+    const handler = createHandler(
+      { allowedTargets: { coder: ["reviewer"] } },
+      makeContext(am, ss, makeConfig())
+    );
+    const result = await handler(["--info"], undefined, {
+      sessionKey: TOP_LEVEL_SESSION,
+      agentName: "coder",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(am as ReturnType<typeof makeAgentManager>).toBeDefined(); // no prompt called
   });
 });

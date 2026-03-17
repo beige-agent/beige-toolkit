@@ -131,10 +131,18 @@ export interface AgentToAgentContext {
   beigeConfig?: BeigeConfigLike;
 }
 
+/** Extended SessionContext shape — includes agentName injected by beige since v0.1.x. */
+interface IncomingSessionContext {
+  sessionKey?: string;
+  channel?: string;
+  /** Agent name, set by AgentManager and passed through BEIGE_AGENT_NAME env var. */
+  agentName?: string;
+}
+
 export type ToolHandler = (
   args: string[],
   config?: Record<string, unknown>,
-  sessionContext?: { sessionKey?: string; channel?: string }
+  sessionContext?: IncomingSessionContext
 ) => Promise<{ output: string; exitCode: number }>;
 
 // ---------------------------------------------------------------------------
@@ -163,6 +171,7 @@ interface ParsedArgs {
   target: string | null;
   session: string | null;
   messageFile: string | null;
+  info: boolean;
   messageParts: string[];
 }
 
@@ -171,6 +180,7 @@ function parseArgs(args: string[]): ParsedArgs {
     target: null,
     session: null,
     messageFile: null,
+    info: false,
     messageParts: [],
   };
 
@@ -183,6 +193,8 @@ function parseArgs(args: string[]): ParsedArgs {
       result.session = args[++i];
     } else if (arg === "--message-file" && i + 1 < args.length) {
       result.messageFile = args[++i];
+    } else if (arg === "--info" || arg === "-i") {
+      result.info = true;
     } else if (arg === "--") {
       result.messageParts.push(...args.slice(i + 1));
       break;
@@ -198,7 +210,7 @@ function parseArgs(args: string[]): ParsedArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Usage text
+// Usage and info text
 // ---------------------------------------------------------------------------
 
 function usageText(callerAgent: string, allowedTargets?: Record<string, string[]>): string {
@@ -206,6 +218,7 @@ function usageText(callerAgent: string, allowedTargets?: Record<string, string[]
   return [
     "Usage: agent-to-agent --target <agent> [--session <key>] <message...>",
     "       agent-to-agent --target <agent> [--session <key>] --message-file <path>",
+    "       agent-to-agent --info",
     "",
     "Start a new conversation:",
     "  agent-to-agent --target reviewer Please review the code in /workspace/src",
@@ -213,8 +226,80 @@ function usageText(callerAgent: string, allowedTargets?: Record<string, string[]
     "Continue an existing conversation:",
     "  agent-to-agent --target reviewer --session <key> Thanks, can you also check the tests?",
     "",
+    "Show your agent-to-agent permissions:",
+    "  agent-to-agent --info",
+    "",
     `Targets you may call: ${permitted}`,
   ].join("\n");
+}
+
+function buildInfoResponse(
+  callerAgent: string,
+  callerDepth: number,
+  maxDepth: number,
+  allowedTargets: Record<string, string[]> | undefined,
+  beigeConfig: BeigeConfigLike | undefined
+): { output: string; exitCode: number } {
+  const lines: string[] = [
+    "agent-to-agent — permissions for this session",
+    "═══════════════════════════════════════════════",
+    "",
+    `Current agent:  ${callerAgent}`,
+    `Current depth:  ${callerDepth}`,
+    `Max depth:      ${maxDepth}`,
+    "",
+  ];
+
+  const remainingDepth = maxDepth - callerDepth;
+
+  if (!allowedTargets) {
+    lines.push("Status: DISABLED — no allowedTargets configured.");
+    lines.push("No agent-to-agent calls can be made until allowedTargets is set in config.json5.");
+  } else {
+    const permitted = allowedTargets[callerAgent] ?? [];
+
+    if (remainingDepth <= 0) {
+      lines.push("Status: BLOCKED — this session is at the maximum allowed depth.");
+      lines.push(`Agents this agent could call at depth 0: ${permitted.join(", ") || "(none)"}`);
+      lines.push("To allow deeper nesting, increase maxDepth in the agent-to-agent tool config.");
+    } else {
+      if (permitted.length === 0) {
+        lines.push(`Status: BLOCKED — '${callerAgent}' has no permitted targets in allowedTargets.`);
+      } else {
+        lines.push(`Status: ACTIVE — ${remainingDepth} level(s) of nesting remaining.`);
+        lines.push("");
+        lines.push(`Agents you may call (${permitted.length}):`);
+        for (const target of permitted) {
+          const isSelf = target === callerAgent;
+          const knownInConfig = beigeConfig ? (beigeConfig.agents[target] !== undefined) : null;
+          const suffix = [
+            isSelf ? "sub-agent" : null,
+            knownInConfig === false ? "⚠ not in beige config" : null,
+          ].filter(Boolean).join(", ");
+          lines.push(`  • ${target}${suffix ? `  (${suffix})` : ""}`);
+        }
+      }
+    }
+
+    lines.push("");
+    lines.push("All configured allowedTargets:");
+    const allEntries = Object.entries(allowedTargets);
+    if (allEntries.length === 0) {
+      lines.push("  (empty)");
+    } else {
+      for (const [agent, targets] of allEntries) {
+        lines.push(`  ${agent} → ${targets.join(", ")}`);
+      }
+    }
+  }
+
+  lines.push("");
+  lines.push(`Note: sub-agents created by this session will have depth ${callerDepth + 1}.`);
+  if (remainingDepth > 0) {
+    lines.push(`Those sub-agents ${callerDepth + 1 >= maxDepth ? "will NOT" : "will"} be able to make further agent-to-agent calls.`);
+  }
+
+  return { output: lines.join("\n"), exitCode: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +317,7 @@ export function createHandler(
   return async (
     args: string[],
     _toolConfig?: Record<string, unknown>,
-    sessionContext?: { sessionKey?: string; channel?: string }
+    sessionContext?: IncomingSessionContext
   ): Promise<{ output: string; exitCode: number }> => {
     // ── Resolve live dependencies ──────────────────────────────────────────
     const agentManager = agentManagerRef?.current ?? null;
@@ -253,22 +338,42 @@ export function createHandler(
 
     const parsed = parseArgs(args);
 
-    if (!parsed.target) {
+    if (!parsed.target && !parsed.info) {
       return {
         output: ["Error: --target <agent> is required.", "", usageText("(unknown)", allowedTargets)].join("\n"),
         exitCode: 1,
       };
     }
 
+    // After this point, either parsed.info is true (handled below and returns early)
+    // or parsed.target is a non-null string (guaranteed by the guard above).
+    const target = parsed.target as string;
+
     // ── Identify the calling agent ─────────────────────────────────────────
-    // The sessionKey encodes the channel and agent name, e.g. "tui:coder:default"
-    // or "telegram:123:456".  We derive the agent name from the session store.
+    // Primary source: sessionContext.agentName, injected by beige's AgentManager
+    // via the BEIGE_AGENT_NAME env var.  This is reliable regardless of session
+    // store availability.
+    //
+    // Secondary source: the session store entry for the caller's session key.
+    // This works for any session that was created via BeigeSessionStore (all
+    // normal human-initiated sessions) and carries the agentName field.
+    //
+    // Note: sessionContext.channel is intentionally NOT used as a fallback —
+    // it is a transport identifier ("tui", "telegram"), not an agent name.
     const callerSessionKey = sessionContext?.sessionKey;
     const callerEntry = callerSessionKey ? sessionStore?.getEntry(callerSessionKey) : undefined;
-    const callerAgent = callerEntry?.agentName ?? sessionContext?.channel ?? "unknown";
+    const callerAgent =
+      sessionContext?.agentName ??
+      callerEntry?.agentName ??
+      "unknown";
 
     // ── Depth check ────────────────────────────────────────────────────────
     const callerDepth = (callerEntry?.metadata?.depth as number | undefined) ?? 0;
+
+    // ── --info: show what this agent is allowed to do ──────────────────────
+    if (parsed.info) {
+      return buildInfoResponse(callerAgent, callerDepth, maxDepth, allowedTargets, beigeConfig);
+    }
 
     if (callerDepth >= maxDepth) {
       return {
@@ -293,7 +398,7 @@ export function createHandler(
           "",
           "Example config:",
           "  config: {",
-          `    allowedTargets: { "${callerAgent}": ["${parsed.target}"] }`,
+          `    allowedTargets: { "${callerAgent}": ["${target}"] }`,
           "  }",
         ].join("\n"),
         exitCode: 1,
@@ -301,25 +406,26 @@ export function createHandler(
     }
 
     const permittedForCaller = allowedTargets[callerAgent] ?? [];
-    if (!permittedForCaller.includes(parsed.target)) {
+    if (!permittedForCaller.includes(target)) {
       const permitted = permittedForCaller.join(", ") || "(none)";
       return {
         output: [
-          `Error: Agent '${callerAgent}' is not permitted to call agent '${parsed.target}'.`,
+          `Error: Agent '${callerAgent}' is not permitted to call agent '${target}'.`,
           `Permitted targets for '${callerAgent}': ${permitted}`,
           "",
           "Update allowedTargets in the agent-to-agent tool config to grant access.",
+          "Run 'agent-to-agent --info' to see your current permissions.",
         ].join("\n"),
         exitCode: 1,
       };
     }
 
     // ── Validate target exists ─────────────────────────────────────────────
-    if (beigeConfig && !beigeConfig.agents[parsed.target]) {
+    if (beigeConfig && !beigeConfig.agents[target]) {
       const known = Object.keys(beigeConfig.agents).join(", ") || "(none)";
       return {
         output: [
-          `Error: Unknown agent '${parsed.target}'.`,
+          `Error: Unknown agent '${target}'.`,
           `Known agents: ${known}`,
         ].join("\n"),
         exitCode: 1,
@@ -371,11 +477,11 @@ export function createHandler(
           exitCode: 1,
         };
       }
-      if (existingEntry.agentName !== parsed.target) {
+      if (existingEntry.agentName !== target) {
         return {
           output: [
             `Error: Session '${parsed.session}' belongs to agent '${existingEntry.agentName}',`,
-            `but --target '${parsed.target}' was specified. Pass the correct agent name.`,
+            `but --target '${target}' was specified. Pass the correct agent name.`,
           ].join("\n"),
           exitCode: 1,
         };
@@ -383,9 +489,9 @@ export function createHandler(
       childSessionKey = parsed.session;
     } else {
       // New session — generate a unique key and register it with depth metadata.
-      childSessionKey = generateChildSessionKey(callerSessionKey ?? "unknown", parsed.target);
+      childSessionKey = generateChildSessionKey(callerSessionKey ?? "unknown", target);
       if (sessionStore) {
-        sessionStore.createSession(childSessionKey, parsed.target, {
+        sessionStore.createSession(childSessionKey, target, {
           depth: callerDepth + 1,
           parentSessionKey: callerSessionKey ?? null,
           invokedBy: callerAgent,
@@ -396,11 +502,11 @@ export function createHandler(
     // ── Invoke the target agent ────────────────────────────────────────────
     let response: string;
     try {
-      response = await agentManager.prompt(childSessionKey, parsed.target, message);
+      response = await agentManager.prompt(childSessionKey, target, message);
     } catch (err) {
       return {
         output: [
-          `Error: Agent '${parsed.target}' failed to respond.`,
+          `Error: Agent '${target}' failed to respond.`,
           err instanceof Error ? err.message : String(err),
         ].join("\n"),
         exitCode: 1,
