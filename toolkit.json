@@ -8,6 +8,7 @@
   "tools": [
     "./tools/github",
     "./tools/agent-to-agent",
-    "./tools/sessions"
+    "./tools/sessions",
+    "./tools/slack"
   ]
 }
