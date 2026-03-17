@@ -1,0 +1,46 @@
+{
+  "name": "@matthias-hausberger/beige-toolkit",
+  "version": "0.1.0",
+  "description": "A collection of tools for Beige agents",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "toolkit.json",
+    "tools/*/tool.json",
+    "tools/*/index.ts",
+    "tools/*/README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "bash scripts/smoke.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "beige",
+    "toolkit",
+    "ai",
+    "agent",
+    "tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matthias-hausberger/beige-toolkit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/matthias-hausberger/beige-toolkit/issues"
+  },
+  "homepage": "https://github.com/matthias-hausberger/beige-toolkit#readme",
+  "license": "MIT"
+}

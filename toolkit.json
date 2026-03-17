@@ -1,0 +1,11 @@
+{
+  "name": "beige-toolkit",
+  "version": "0.1.0",
+  "description": "A collection of tools for Beige agents",
+  "author": "Matthias Hausberger",
+  "license": "MIT",
+  "repository": "github:matthias-hausberger/beige-toolkit",
+  "tools": [
+    "./tools/github"
+  ]
+}
