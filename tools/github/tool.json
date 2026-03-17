@@ -1,6 +1,6 @@
 {
   "name": "github",
-  "description": "Interact with GitHub using the GitHub CLI (gh). Manage repos, issues, pull requests, releases, and more. Requires gh to be installed and authenticated on the gateway host.",
+  "description": "Interact with GitHub using the GitHub CLI (gh). Manage repos, issues, pull requests, releases, and more. Requires gh to be installed and authenticated on the gateway host. Repository deletion is permanently blocked. Raw API access ('api') is off by default but can be enabled via allowedCommands config.",
   "commands": [
     "repo list [owner]                         — List repositories",
     "repo view <owner/repo>                    — View repository details",
@@ -12,8 +12,7 @@
     "pr view <number> --repo <owner/repo>      — View a pull request",
     "pr create --repo <owner/repo> --title <title> --body <body>     — Create a pull request",
     "release list --repo <owner/repo>          — List releases",
-    "run list --repo <owner/repo>              — List workflow runs",
-    "api <endpoint>                            — Make a raw GitHub API request"
+    "run list --repo <owner/repo>              — List workflow runs"
   ],
   "target": "gateway",
   "config": {

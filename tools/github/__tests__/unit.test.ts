@@ -97,6 +97,67 @@ describe("deniedCommands", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Hard-blocked operations
+// ---------------------------------------------------------------------------
+
+describe("hard-blocked operations", () => {
+  it("blocks repo delete regardless of allowedCommands", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["repo", "delete", "myorg/myrepo"], { stdout: "deleted", exitCode: 0 });
+
+    const handler = createHandler({ allowedCommands: ["repo"] }, { executor: fake.run });
+    const result = await handler(["repo", "delete", "myorg/myrepo"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("permanently blocked");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("blocks repo delete even with no config restrictions", async () => {
+    const fake = createFakeGhClient();
+    const handler = createHandler({}, { executor: fake.run });
+    const result = await handler(["repo", "delete"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("permanently blocked");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("does not block other repo subcommands", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["repo", "list"], { stdout: "myorg/myrepo", exitCode: 0 });
+
+    const handler = createHandler({}, { executor: fake.run });
+    const result = await handler(["repo", "list"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it("blocks api by default (not in ALL_COMMANDS)", async () => {
+    const fake = createFakeGhClient();
+    const handler = createHandler({}, { executor: fake.run });
+    const result = await handler(["api", "repos/myorg/myrepo"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Permission denied");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("allows api when explicitly opted in via allowedCommands", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["api", "repos/myorg/myrepo"], { stdout: '{"name":"myrepo"}', exitCode: 0 });
+
+    const handler = createHandler({ allowedCommands: ["api"] }, { executor: fake.run });
+    const result = await handler(["api", "repos/myorg/myrepo"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("myrepo");
+    expect(fake.calls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Successful gh execution
 // ---------------------------------------------------------------------------
 
@@ -176,10 +237,10 @@ describe("failed execution", () => {
 
   it("returns a fallback message when both streams are empty on failure", async () => {
     const fake = createFakeGhClient();
-    fake.register(["api", "unknown"], { stdout: "", stderr: "", exitCode: 2 });
+    fake.register(["release", "view", "v0.0.0"], { stdout: "", stderr: "", exitCode: 2 });
 
     const handler = createHandler({}, { executor: fake.run });
-    const result = await handler(["api", "unknown"]);
+    const result = await handler(["release", "view", "v0.0.0"]);
 
     expect(result.exitCode).toBe(2);
     expect(result.output).toContain("gh exited with code 2");

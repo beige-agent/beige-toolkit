@@ -13,8 +13,12 @@ export type GhExecutor = (
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 /**
- * All top-level gh subcommands this tool exposes by default.
- * Used for access-control when allowedCommands is not specified.
+ * Default set of top-level gh subcommands permitted when no allowedCommands
+ * config is provided.
+ *
+ * Notably absent: "api" — raw API access (arbitrary HTTP methods + GraphQL
+ * mutations) is considered elevated and must be explicitly opted into via
+ * allowedCommands: ["api", ...] in the tool config.
  */
 const ALL_COMMANDS = [
   "repo",
@@ -26,7 +30,6 @@ const ALL_COMMANDS = [
   "gist",
   "org",
   "project",
-  "api",
   "auth",
   "browse",
   "cache",
@@ -44,7 +47,8 @@ const ALL_COMMANDS = [
  *
  * Config fields (both optional, strings or arrays of strings):
  *   allowedCommands  — whitelist; only these subcommands are permitted.
- *                      Defaults to all when absent.
+ *                      Defaults to ALL_COMMANDS when absent. Set explicitly
+ *                      to include "api" if raw API access is needed.
  *   deniedCommands   — blacklist; these subcommands are always blocked,
  *                      even if present in allowedCommands.
  *
@@ -148,6 +152,14 @@ export function createHandler(
       const permitted = [...allowedCommands].join(", ") || "(none)";
       return {
         output: `Permission denied: subcommand '${subcommand}' is not allowed for this agent.\nPermitted subcommands: ${permitted}`,
+        exitCode: 1,
+      };
+    }
+
+    // Hard-blocked operations — these cannot be enabled by any config.
+    if (subcommand === "repo" && rest[0] === "delete") {
+      return {
+        output: "Permission denied: 'repo delete' is permanently blocked. Repository deletion is not permitted through this tool.",
         exitCode: 1,
       };
     }

@@ -102,8 +102,16 @@ Restrict which top-level `gh` subcommands an agent may use via the tool's
 
 | Config field | Type | Default | Description |
 |---|---|---|---|
-| `allowedCommands` | `string \| string[]` | all commands | Only these subcommands are permitted. |
+| `allowedCommands` | `string \| string[]` | all commands except `api` | Only these subcommands are permitted. |
 | `deniedCommands` | `string \| string[]` | *(none)* | Always blocked. Deny beats allow. |
+
+`api` is excluded from the default set because it allows arbitrary HTTP methods and GraphQL mutations against any GitHub endpoint. To enable it, set it explicitly in `allowedCommands`:
+
+```json5
+config: {
+  allowedCommands: ["repo", "issue", "pr", "api"],
+},
+```
 
 **Example — read-only agent** (list and view, no mutations):
 
