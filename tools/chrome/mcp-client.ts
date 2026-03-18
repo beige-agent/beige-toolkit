@@ -43,6 +43,16 @@ export interface McpTool {
   inputSchema?: Record<string, unknown>;
 }
 
+/**
+ * Interface for MCP client — allows tests to stub without implementing the full class.
+ */
+export interface McpClientLike {
+  readonly isClosed: boolean;
+  initialize(): Promise<void>;
+  listTools(): Promise<McpTool[]>;
+  callTool(name: string, args: Record<string, unknown>, timeoutMs: number): Promise<McpToolCallResult>;
+}
+
 // ---------------------------------------------------------------------------
 // McpClient
 // ---------------------------------------------------------------------------

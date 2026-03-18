@@ -13,7 +13,7 @@ import { spawn } from "child_process";
 import { mkdirSync } from "fs";
 import { homedir } from "os";
 import { resolve } from "path";
-import { McpClient } from "./mcp-client.js";
+import { McpClient, type McpClientLike } from "./mcp-client.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,7 +43,7 @@ export interface ProcessConfig {
 }
 
 export interface ManagedProcess {
-  client: McpClient;
+  client: McpClientLike;
   /** Resets the idle timer. Called on every successful tool invocation. */
   touch(): void;
   /** Kill the process immediately. */
