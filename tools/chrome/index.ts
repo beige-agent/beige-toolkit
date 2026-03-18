@@ -59,8 +59,8 @@
 
 import { mkdirSync } from "fs";
 import { resolve, join } from "path";
-import { ProcessManager, resolveBeigeDataDir, type ManagedProcess } from "./process-manager.js";
-import type { McpTool } from "./mcp-client.js";
+import { ProcessManager, resolveBeigeDataDir, type ManagedProcess } from "./process-manager.ts";
+import type { McpTool } from "./mcp-client.ts";
 
 // ---------------------------------------------------------------------------
 // Types

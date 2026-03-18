@@ -13,7 +13,7 @@ import { spawn } from "child_process";
 import { mkdirSync } from "fs";
 import { homedir } from "os";
 import { resolve } from "path";
-import { McpClient, type McpClientLike } from "./mcp-client.js";
+import { McpClient, type McpClientLike } from "./mcp-client.ts";
 
 // ---------------------------------------------------------------------------
 // Types
