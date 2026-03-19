@@ -93,6 +93,53 @@ config: {
 }
 ```
 
+### Per-Agent Configuration (toolConfigs)
+
+Use beige's `toolConfigs` to give different agents different Slack permissions:
+
+```json5
+tools: {
+  slack: {
+    path: "~/.beige/toolkits/beige-toolkit/tools/slack",
+    target: "gateway",
+    config: {
+      // Baseline: read-only, no sending
+      denyCommands: ["messages send", "messages draft",
+                     "auth login", "auth logout", "update"],
+      workspace: "my-workspace",
+    },
+  },
+},
+
+agents: {
+  // Monitor agent — read-only, uses baseline
+  monitor: {
+    tools: ["slack"],
+  },
+
+  // Notification agent — can send messages
+  notifier: {
+    tools: ["slack"],
+    toolConfigs: {
+      slack: {
+        denyCommands: ["messages draft", "auth login", "auth logout", "update"],
+        // messages send is no longer denied
+      },
+    },
+  },
+
+  // React bot — can only add reactions
+  reactor: {
+    tools: ["slack"],
+    toolConfigs: {
+      slack: {
+        allowCommands: ["messages react"],
+      },
+    },
+  },
+},
+```
+
 ## Available Commands
 
 ### `conversations`

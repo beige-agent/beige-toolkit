@@ -7,16 +7,28 @@
  * ── How it works ────────────────────────────────────────────────────────────
  *
  * When an agent calls this tool, the gateway:
- *   1. Checks that the calling agent is permitted to invoke the target agent
- *      (via allowedTargets config).
- *   2. Checks that the call would not exceed the configured nesting depth
- *      (maxDepth).  Depth is stored as opaque metadata on the session entry
- *      in beige's session map — beige itself never interprets it.
+ *   1. Checks that the target agent is listed in the tool's `targets` config.
+ *   2. Checks that the call would not exceed the configured depth limit
+ *      (per-target `maxDepth` or the global default).  Depth is stored as
+ *      opaque metadata on the session entry in beige's session map — beige
+ *      itself never interprets it.
  *   3. Creates a new session for the target agent (or resumes an existing one
  *      if --session is supplied).
  *   4. Sends the message to the target agent and waits for the full response.
  *   5. Returns the response plus a SESSION key the caller can use for
  *      follow-up turns.
+ *
+ * ── Config model ────────────────────────────────────────────────────────────
+ *
+ * The `targets` object lists which agents can be called.  Each key is a target
+ * agent name with an optional `maxDepth` override.  The special key `"SELF"`
+ * resolves to the calling agent's own name at runtime, enabling sub-agent
+ * patterns without naming a specific agent.
+ *
+ * Because beige supports per-agent `toolConfigs` overrides (deep-merged with
+ * the top-level tool config), different agents can have different target lists.
+ * The top-level config defines the baseline; an agent's `toolConfigs` entry
+ * narrows or extends it.
  *
  * ── Output format ───────────────────────────────────────────────────────────
  *
@@ -48,19 +60,24 @@
  *   First sub-agent call:               depth = 1
  *   Second sub-agent call:              depth = 2  …and so on
  *
- * When maxDepth = 1 (the default), depth-1 sessions are blocked from making
- * further agent-to-agent calls.  The check reads the caller's session entry
- * from the session store; if no entry exists (i.e. the key is not in the
- * session map — possible in tests or unusual scenarios) depth defaults to 0.
+ * Each target in the `targets` config can have its own `maxDepth`.  When not
+ * set, the top-level `maxDepth` default (1) applies.
+ *
+ * When the effective maxDepth for a target is 1, depth-1 sessions are blocked
+ * from making further agent-to-agent calls to that target.  The check reads
+ * the caller's session entry from the session store; if no entry exists (i.e.
+ * the key is not in the session map — possible in tests or unusual scenarios)
+ * depth defaults to 0.
  *
  * ── Security model ──────────────────────────────────────────────────────────
  *
- * - No targets are allowed by default.  allowedTargets must be explicitly
- *   configured or every call returns a permission error.
- * - An agent can only call targets listed in allowedTargets[callerAgentName].
- * - Sub-agent calls are just self-calls: include the agent's own name in its
- *   allowedTargets list.
- * - maxDepth caps recursive depth regardless of allowedTargets.
+ * - No targets are allowed by default.  The `targets` config must be
+ *   explicitly set or every call returns a permission error.
+ * - The `"SELF"` key is resolved at runtime to the calling agent's name,
+ *   allowing sub-agent creation without hardcoding agent names.
+ * - Per-agent restrictions can be applied via beige's `toolConfigs` override
+ *   mechanism — each agent deep-merges its own config on top of the baseline.
+ * - Per-target `maxDepth` overrides cap recursive depth independently.
  * - The tool validates that the target agent name exists in the beige config
  *   before forwarding the call; unknown agents are rejected immediately.
  *
@@ -102,20 +119,41 @@ export interface BeigeConfigLike {
 }
 
 /**
+ * Per-target configuration.
+ */
+export interface TargetConfig {
+  /**
+   * Maximum nesting depth for calls to this target.
+   * Overrides the top-level maxDepth when set.
+   */
+  maxDepth?: number;
+}
+
+/**
  * Tool config supplied via config.json5.
+ *
+ * The `targets` object lists which agents can be called.  Each key is a target
+ * agent name with an optional per-target config.  The special key `"SELF"`
+ * resolves to the calling agent's own name at runtime, enabling sub-agent
+ * patterns.
+ *
+ * Per-agent restrictions are handled via beige's `toolConfigs` override
+ * mechanism — no per-caller mapping is needed in this config.
  */
 export interface AgentToAgentConfig {
   /**
-   * Explicit opt-in map.
-   * Key: the agent making the call.
-   * Value: list of agent names it may call (include own name for sub-agent).
-   * Absent = no agent is permitted to call any other agent.
+   * Map of target agent names to their config.
+   * Key: agent name (or the special keyword "SELF" for self-invocation).
+   * Value: optional per-target config (e.g. maxDepth override).
+   *
+   * Absent = no agent is permitted to be called.
    */
-  allowedTargets?: Record<string, string[]>;
+  targets?: Record<string, TargetConfig>;
 
   /**
-   * Maximum nesting depth.  Default: 1.
-   * 0 = all calls blocked regardless of allowedTargets.
+   * Default maximum nesting depth for targets that don't specify their own.
+   * Default: 1.
+   * 0 = all calls blocked regardless of targets.
    * 1 = agents may call agents; those sub-agents may not call further agents.
    */
   maxDepth?: number;
@@ -210,11 +248,38 @@ function parseArgs(args: string[]): ParsedArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Target resolution — handles SELF keyword
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the effective target set for a given caller agent.
+ *
+ * The `"SELF"` key in `targets` is expanded to the caller's own name.
+ * Returns a Map from resolved target name → TargetConfig.
+ */
+export function resolveTargets(
+  targets: Record<string, TargetConfig> | undefined,
+  callerAgent: string
+): Map<string, TargetConfig> {
+  const resolved = new Map<string, TargetConfig>();
+  if (!targets) return resolved;
+
+  for (const [key, cfg] of Object.entries(targets)) {
+    const resolvedKey = key === "SELF" ? callerAgent : key;
+    resolved.set(resolvedKey, cfg);
+  }
+
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
 // Usage and info text
 // ---------------------------------------------------------------------------
 
-function usageText(callerAgent: string, allowedTargets?: Record<string, string[]>): string {
-  const permitted = allowedTargets?.[callerAgent]?.join(", ") ?? "(none configured)";
+function usageText(resolvedTargets: Map<string, TargetConfig>): string {
+  const permitted = resolvedTargets.size > 0
+    ? [...resolvedTargets.keys()].join(", ")
+    : "(none configured)";
   return [
     "Usage: agent-to-agent --target <agent> [--session <key>] <message...>",
     "       agent-to-agent --target <agent> [--session <key>] --message-file <path>",
@@ -236,68 +301,70 @@ function usageText(callerAgent: string, allowedTargets?: Record<string, string[]
 function buildInfoResponse(
   callerAgent: string,
   callerDepth: number,
-  maxDepth: number,
-  allowedTargets: Record<string, string[]> | undefined,
+  defaultMaxDepth: number,
+  resolvedTargets: Map<string, TargetConfig>,
+  rawTargets: Record<string, TargetConfig> | undefined,
   beigeConfig: BeigeConfigLike | undefined
 ): { output: string; exitCode: number } {
   const lines: string[] = [
     "agent-to-agent — permissions for this session",
     "═══════════════════════════════════════════════",
     "",
-    `Current agent:  ${callerAgent}`,
-    `Current depth:  ${callerDepth}`,
-    `Max depth:      ${maxDepth}`,
+    `Current agent:      ${callerAgent}`,
+    `Current depth:      ${callerDepth}`,
+    `Default max depth:  ${defaultMaxDepth}`,
     "",
   ];
 
-  const remainingDepth = maxDepth - callerDepth;
-
-  if (!allowedTargets) {
-    lines.push("Status: DISABLED — no allowedTargets configured.");
-    lines.push("No agent-to-agent calls can be made until allowedTargets is set in config.json5.");
+  if (!rawTargets || Object.keys(rawTargets).length === 0) {
+    lines.push("Status: DISABLED — no targets configured.");
+    lines.push("No agent-to-agent calls can be made until targets is set in config.json5.");
   } else {
-    const permitted = allowedTargets[callerAgent] ?? [];
-
-    if (remainingDepth <= 0) {
-      lines.push("Status: BLOCKED — this session is at the maximum allowed depth.");
-      lines.push(`Agents this agent could call at depth 0: ${permitted.join(", ") || "(none)"}`);
-      lines.push("To allow deeper nesting, increase maxDepth in the agent-to-agent tool config.");
+    if (resolvedTargets.size === 0) {
+      lines.push("Status: DISABLED — no targets resolved for this agent.");
     } else {
-      if (permitted.length === 0) {
-        lines.push(`Status: BLOCKED — '${callerAgent}' has no permitted targets in allowedTargets.`);
+      // Check if at least one target is reachable at current depth
+      const reachable = [...resolvedTargets.entries()].filter(
+        ([, cfg]) => callerDepth < (cfg.maxDepth ?? defaultMaxDepth)
+      );
+
+      if (reachable.length === 0) {
+        lines.push("Status: BLOCKED — this session is at or above the maximum allowed depth for all targets.");
       } else {
-        lines.push(`Status: ACTIVE — ${remainingDepth} level(s) of nesting remaining.`);
-        lines.push("");
-        lines.push(`Agents you may call (${permitted.length}):`);
-        for (const target of permitted) {
-          const isSelf = target === callerAgent;
-          const knownInConfig = beigeConfig ? (beigeConfig.agents[target] !== undefined) : null;
-          const suffix = [
-            isSelf ? "sub-agent" : null,
-            knownInConfig === false ? "⚠ not in beige config" : null,
-          ].filter(Boolean).join(", ");
-          lines.push(`  • ${target}${suffix ? `  (${suffix})` : ""}`);
-        }
+        lines.push(`Status: ACTIVE — ${reachable.length} target(s) reachable from current depth.`);
+      }
+
+      lines.push("");
+      lines.push(`Targets (${resolvedTargets.size}):`);
+      for (const [target, cfg] of resolvedTargets) {
+        const effectiveDepth = cfg.maxDepth ?? defaultMaxDepth;
+        const remaining = effectiveDepth - callerDepth;
+        const isSelf = target === callerAgent;
+        const knownInConfig = beigeConfig ? (beigeConfig.agents[target] !== undefined) : null;
+        const blocked = remaining <= 0;
+        const suffix = [
+          isSelf ? "sub-agent" : null,
+          `maxDepth: ${effectiveDepth}`,
+          blocked ? "BLOCKED at current depth" : `${remaining} level(s) remaining`,
+          knownInConfig === false ? "⚠ not in beige config" : null,
+        ].filter(Boolean).join(", ");
+        lines.push(`  • ${target}  (${suffix})`);
       }
     }
 
-    lines.push("");
-    lines.push("All configured allowedTargets:");
-    const allEntries = Object.entries(allowedTargets);
-    if (allEntries.length === 0) {
-      lines.push("  (empty)");
-    } else {
-      for (const [agent, targets] of allEntries) {
-        lines.push(`  ${agent} → ${targets.join(", ")}`);
+    // Show raw targets config for reference
+    if (rawTargets && Object.keys(rawTargets).length > 0) {
+      lines.push("");
+      lines.push("Raw targets config (before SELF resolution):");
+      for (const [key, cfg] of Object.entries(rawTargets)) {
+        const depthStr = cfg.maxDepth !== undefined ? `maxDepth: ${cfg.maxDepth}` : "default depth";
+        lines.push(`  ${key} → ${depthStr}`);
       }
     }
   }
 
   lines.push("");
   lines.push(`Note: sub-agents created by this session will have depth ${callerDepth + 1}.`);
-  if (remainingDepth > 0) {
-    lines.push(`Those sub-agents ${callerDepth + 1 >= maxDepth ? "will NOT" : "will"} be able to make further agent-to-agent calls.`);
-  }
 
   return { output: lines.join("\n"), exitCode: 0 };
 }
@@ -311,8 +378,8 @@ export function createHandler(
   context: AgentToAgentContext = {}
 ): ToolHandler {
   const { agentManagerRef, sessionStore, beigeConfig } = context;
-  const maxDepth = config.maxDepth ?? 1;
-  const allowedTargets = config.allowedTargets;
+  const defaultMaxDepth = config.maxDepth ?? 1;
+  const rawTargets = config.targets;
 
   return async (
     args: string[],
@@ -328,10 +395,21 @@ export function createHandler(
       };
     }
 
+    // ── Identify the calling agent ─────────────────────────────────────────
+    const callerSessionKey = sessionContext?.sessionKey;
+    const callerEntry = callerSessionKey ? sessionStore?.getEntry(callerSessionKey) : undefined;
+    const callerAgent =
+      sessionContext?.agentName ??
+      callerEntry?.agentName ??
+      "unknown";
+
+    // ── Resolve targets (expand SELF) ──────────────────────────────────────
+    const resolvedTargets = resolveTargets(rawTargets, callerAgent);
+
     // ── Parse args ─────────────────────────────────────────────────────────
     if (args.length === 0) {
       return {
-        output: usageText("(unknown)", allowedTargets),
+        output: usageText(resolvedTargets),
         exitCode: 1,
       };
     }
@@ -340,7 +418,7 @@ export function createHandler(
 
     if (!parsed.target && !parsed.info) {
       return {
-        output: ["Error: --target <agent> is required.", "", usageText("(unknown)", allowedTargets)].join("\n"),
+        output: ["Error: --target <agent> is required.", "", usageText(resolvedTargets)].join("\n"),
         exitCode: 1,
       };
     }
@@ -349,72 +427,56 @@ export function createHandler(
     // or parsed.target is a non-null string (guaranteed by the guard above).
     const target = parsed.target as string;
 
-    // ── Identify the calling agent ─────────────────────────────────────────
-    // Primary source: sessionContext.agentName, injected by beige's AgentManager
-    // via the BEIGE_AGENT_NAME env var.  This is reliable regardless of session
-    // store availability.
-    //
-    // Secondary source: the session store entry for the caller's session key.
-    // This works for any session that was created via BeigeSessionStore (all
-    // normal human-initiated sessions) and carries the agentName field.
-    //
-    // Note: sessionContext.channel is intentionally NOT used as a fallback —
-    // it is a transport identifier ("tui", "telegram"), not an agent name.
-    const callerSessionKey = sessionContext?.sessionKey;
-    const callerEntry = callerSessionKey ? sessionStore?.getEntry(callerSessionKey) : undefined;
-    const callerAgent =
-      sessionContext?.agentName ??
-      callerEntry?.agentName ??
-      "unknown";
-
     // ── Depth check ────────────────────────────────────────────────────────
     const callerDepth = (callerEntry?.metadata?.depth as number | undefined) ?? 0;
 
     // ── --info: show what this agent is allowed to do ──────────────────────
     if (parsed.info) {
-      return buildInfoResponse(callerAgent, callerDepth, maxDepth, allowedTargets, beigeConfig);
-    }
-
-    if (callerDepth >= maxDepth) {
-      return {
-        output: [
-          `Error: Agent call depth limit reached (current depth: ${callerDepth}, max: ${maxDepth}).`,
-          "This session was itself created by another agent and is not permitted to make",
-          "further agent-to-agent calls.",
-          "",
-          "To allow deeper nesting, increase maxDepth in the agent-to-agent tool config.",
-        ].join("\n"),
-        exitCode: 1,
-      };
+      return buildInfoResponse(callerAgent, callerDepth, defaultMaxDepth, resolvedTargets, rawTargets, beigeConfig);
     }
 
     // ── Permission check ───────────────────────────────────────────────────
-    // allowedTargets absent → nothing is permitted (safe default).
-    if (!allowedTargets) {
+    if (!rawTargets || Object.keys(rawTargets).length === 0) {
       return {
         output: [
-          "Error: No allowedTargets configured for the agent-to-agent tool.",
-          "Agent-to-agent calls are disabled until allowedTargets is set in config.json5.",
+          "Error: No targets configured for the agent-to-agent tool.",
+          "Agent-to-agent calls are disabled until targets is set in config.json5.",
           "",
           "Example config:",
           "  config: {",
-          `    allowedTargets: { "${callerAgent}": ["${target}"] }`,
+          `    targets: { "${target}": {} }`,
           "  }",
         ].join("\n"),
         exitCode: 1,
       };
     }
 
-    const permittedForCaller = allowedTargets[callerAgent] ?? [];
-    if (!permittedForCaller.includes(target)) {
-      const permitted = permittedForCaller.join(", ") || "(none)";
+    if (!resolvedTargets.has(target)) {
+      const permitted = [...resolvedTargets.keys()].join(", ") || "(none)";
       return {
         output: [
-          `Error: Agent '${callerAgent}' is not permitted to call agent '${target}'.`,
-          `Permitted targets for '${callerAgent}': ${permitted}`,
+          `Error: Target agent '${target}' is not in the configured targets.`,
+          `Configured targets: ${permitted}`,
           "",
-          "Update allowedTargets in the agent-to-agent tool config to grant access.",
+          "Update the targets config in the agent-to-agent tool to grant access.",
           "Run 'agent-to-agent --info' to see your current permissions.",
+        ].join("\n"),
+        exitCode: 1,
+      };
+    }
+
+    // ── Per-target depth check ─────────────────────────────────────────────
+    const targetConfig = resolvedTargets.get(target)!;
+    const effectiveMaxDepth = targetConfig.maxDepth ?? defaultMaxDepth;
+
+    if (callerDepth >= effectiveMaxDepth) {
+      return {
+        output: [
+          `Error: Agent call depth limit reached (current depth: ${callerDepth}, max for '${target}': ${effectiveMaxDepth}).`,
+          "This session was itself created by another agent and is not permitted to make",
+          "further agent-to-agent calls to this target.",
+          "",
+          "To allow deeper nesting, increase maxDepth in the agent-to-agent tool config.",
         ].join("\n"),
         exitCode: 1,
       };
@@ -450,7 +512,7 @@ export function createHandler(
 
     if (!message) {
       return {
-        output: ["Error: No message provided.", "", usageText(callerAgent, allowedTargets)].join("\n"),
+        output: ["Error: No message provided.", "", usageText(resolvedTargets)].join("\n"),
         exitCode: 1,
       };
     }

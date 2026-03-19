@@ -50,6 +50,50 @@ config: {
 }
 ```
 
+### Per-Agent Configuration (toolConfigs)
+
+Use beige's `toolConfigs` to give different agents different GitHub permissions:
+
+```json5
+tools: {
+  github: {
+    path: "~/.beige/toolkits/beige-toolkit/tools/github",
+    target: "gateway",
+    config: {
+      // Baseline: standard commands, no API access
+      allowedCommands: ["repo", "issue", "pr", "release", "run"],
+    },
+  },
+},
+
+agents: {
+  // Triage bot — issues only
+  triage: {
+    tools: ["github"],
+    toolConfigs: {
+      github: {
+        allowedCommands: ["issue"],
+      },
+    },
+  },
+
+  // DevOps agent — full access including API
+  devops: {
+    tools: ["github"],
+    toolConfigs: {
+      github: {
+        allowedCommands: ["repo", "issue", "pr", "release", "run", "api"],
+      },
+    },
+  },
+
+  // Default agent — uses baseline config as-is
+  assistant: {
+    tools: ["github"],
+  },
+},
+```
+
 ## Setup
 
 Add to your agent in `config.json5`:

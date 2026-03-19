@@ -72,17 +72,17 @@ Positional arguments after flags are joined as the message.
 
 ## Depth Limiting
 
-Nesting is capped by `maxDepth` (default: `1`):
+Nesting is capped by `maxDepth` (default: `1`). Each target can have its own depth limit:
 
 | `maxDepth` | What is allowed |
 |---|---|
-| `0` | No agent-to-agent calls at all |
+| `0` | No agent-to-agent calls at all to this target |
 | `1` *(default)* | Agents may call agents; those sub-agents may **not** call further agents |
 | `2` | Two levels of nesting |
 
 If you hit the depth limit:
 ```
-Error: Agent call depth limit reached (current depth: 1, max: 1).
+Error: Agent call depth limit reached (current depth: 1, max for 'reviewer': 1).
 ```
 
 ## Tips
@@ -90,4 +90,4 @@ Error: Agent call depth limit reached (current depth: 1, max: 1).
 - Run `--info` first to understand your permissions before making calls.
 - Omitting `--session` starts a fresh conversation every time.
 - Use `--message-file` for long or complex prompts that would be awkward inline.
-- Sub-agent calls (calling yourself) work the same way — your name just needs to be in `allowedTargets`.
+- Sub-agent calls (calling yourself) work the same way — if `SELF` or your own agent name is in the `targets` config.

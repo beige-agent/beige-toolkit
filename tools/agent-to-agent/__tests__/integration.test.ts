@@ -91,7 +91,7 @@ describe("multi-turn conversation", () => {
     ss.createSession(CALLER_KEY, "coder");
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] } },
+      { targets: { reviewer: {} } },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -111,7 +111,7 @@ describe("multi-turn conversation", () => {
     );
     expect(second.exitCode).toBe(0);
 
-    // Only one session was ever created
+    // Only one session was ever created (for reviewer; the CALLER_KEY seed doesn't count)
     const userCreated = ss.created.filter((c) => c.agentName === "reviewer");
     expect(userCreated).toHaveLength(1);
 
@@ -126,7 +126,7 @@ describe("multi-turn conversation", () => {
     ss.createSession(CALLER_KEY, "coder");
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] } },
+      { targets: { reviewer: {} } },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -158,7 +158,7 @@ describe("depth metadata", () => {
     ss.createSession(CALLER_KEY, "coder"); // no metadata → depth 0
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] } },
+      { targets: { reviewer: {} } },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -170,7 +170,7 @@ describe("depth metadata", () => {
     expect(reviewerSession.metadata?.invokedBy).toBe("coder");
   });
 
-  it("sub-agent at depth 1 is blocked from calling further (maxDepth=1)", async () => {
+  it("sub-agent at depth 1 is blocked from calling further (default maxDepth=1)", async () => {
     const am = makeAgentManager();
     const ss = makeRealishSessionStore();
 
@@ -179,7 +179,7 @@ describe("depth metadata", () => {
     ss.createSession(depth1Key, "coder", { depth: 1, parentSessionKey: "tui:human:default", invokedBy: "human" });
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] }, maxDepth: 1 },
+      { targets: { reviewer: {} }, maxDepth: 1 },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -194,7 +194,7 @@ describe("depth metadata", () => {
     expect(am.calls).toHaveLength(0);
   });
 
-  it("sub-agent at depth 1 can call further when maxDepth=2", async () => {
+  it("sub-agent at depth 1 can call further when target maxDepth=2", async () => {
     const am = makeAgentManager();
     const ss = makeRealishSessionStore();
 
@@ -202,7 +202,7 @@ describe("depth metadata", () => {
     ss.createSession(depth1Key, "coder", { depth: 1, parentSessionKey: "tui:human:default", invokedBy: "human" });
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] }, maxDepth: 2 },
+      { targets: { reviewer: { maxDepth: 2 } } },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -236,7 +236,7 @@ describe("parallel conversations", () => {
     ss.createSession(CALLER_KEY, "coder");
 
     const handler = createHandler(
-      { allowedTargets: { coder: ["reviewer"] } },
+      { targets: { reviewer: {} } },
       { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
     );
 
@@ -267,5 +267,34 @@ describe("parallel conversations", () => {
     // Session store should still have only 2 reviewer sessions (no new one created for follow-up)
     const reviewerSessions = ss.created.filter((c) => c.agentName === "reviewer");
     expect(reviewerSessions).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SELF keyword integration
+// ---------------------------------------------------------------------------
+
+describe("SELF keyword", () => {
+  it("allows sub-agent calls via SELF and tracks depth correctly", async () => {
+    const am = makeAgentManager("Subtask complete.");
+    const ss = makeRealishSessionStore();
+    ss.createSession(CALLER_KEY, "coder");
+
+    const handler = createHandler(
+      { targets: { SELF: { maxDepth: 2 } } },
+      { agentManagerRef: { current: am }, sessionStore: ss, beigeConfig: BEIGE_CONFIG }
+    );
+
+    const result = await handler(["--target", "coder", "Do subtask"], undefined, {
+      sessionKey: CALLER_KEY,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Subtask complete.");
+
+    // Sub-session should have depth 1 and invokedBy "coder"
+    const childSession = ss.created.find((c) => c.agentName === "coder" && c.key !== CALLER_KEY)!;
+    expect(childSession.metadata?.depth).toBe(1);
+    expect(childSession.metadata?.invokedBy).toBe("coder");
   });
 });

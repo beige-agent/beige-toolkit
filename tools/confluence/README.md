@@ -139,6 +139,55 @@ config: {
 }
 ```
 
+### Per-Agent Configuration (toolConfigs)
+
+Use beige's `toolConfigs` to give different agents different Confluence permissions:
+
+```json5
+tools: {
+  confluence: {
+    path: "~/.beige/toolkits/beige-toolkit/tools/confluence",
+    target: "gateway",
+    config: {
+      // Baseline: read-only, all spaces
+      denyCommands: ["create", "create-child", "update", "delete", "move", "copy-tree",
+                     "attachment-upload", "attachment-delete", "comment",
+                     "property-set", "property-delete"],
+      profile: "production",
+    },
+  },
+},
+
+agents: {
+  // Research agent — read-only, scoped to specific spaces
+  researcher: {
+    tools: ["confluence"],
+    toolConfigs: {
+      confluence: {
+        allowReadSpaces: ["DOCS", "TEAM"],
+        requireSpaceOnSearch: true,
+      },
+    },
+  },
+
+  // Documentation bot — can also write, but only to DRAFTS
+  docbot: {
+    tools: ["confluence"],
+    toolConfigs: {
+      confluence: {
+        denyCommands: [],              // override: remove all command denials
+        allowWriteSpaces: ["DRAFTS"],  // added: restrict writes to DRAFTS
+      },
+    },
+  },
+
+  // Default agent — uses baseline config (read-only, all spaces)
+  assistant: {
+    tools: ["confluence"],
+  },
+},
+```
+
 ## Available Commands
 
 ### Read / Search

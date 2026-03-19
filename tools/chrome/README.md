@@ -93,6 +93,67 @@ config: {
 }
 ```
 
+### Per-Agent Configuration (toolConfigs)
+
+Beige supports per-agent `toolConfigs` overrides that are deep-merged with the top-level tool config. This lets you share one Chrome tool definition but give each agent different capabilities:
+
+```json5
+tools: {
+  chrome: {
+    path: "~/.beige/toolkits/beige-toolkit/tools/chrome",
+    target: "gateway",
+    config: {
+      // Baseline: headless, standard timeout
+      headless: true,
+      timeout: 60,
+    },
+  },
+},
+
+agents: {
+  // QA agent — full browser access, visible window, longer timeout
+  qa: {
+    tools: ["chrome"],
+    toolConfigs: {
+      chrome: {
+        headless: false,        // override: visible browser for debugging
+        timeout: 120,           // override: longer timeout for complex tests
+      },
+    },
+  },
+
+  // Scraper agent — headless (inherits baseline), slim mode, restricted tools
+  scraper: {
+    tools: ["chrome"],
+    toolConfigs: {
+      chrome: {
+        slim: true,             // added: minimal tool set
+        allowTools: ["take_snapshot", "navigate_page", "take_screenshot"],
+      },
+    },
+  },
+
+  // Reporter agent — read-only, no interaction tools
+  reporter: {
+    tools: ["chrome"],
+    toolConfigs: {
+      chrome: {
+        allowTools: ["take_snapshot", "take_screenshot", "list_pages",
+                     "list_console_messages", "list_network_requests"],
+        denyTools: ["evaluate_script", "click", "fill", "fill_form"],
+      },
+    },
+  },
+
+  // Default agent — uses baseline config as-is (headless, 60s timeout)
+  assistant: {
+    tools: ["chrome"],
+  },
+},
+```
+
+> **Note:** `toolConfigs` values are deep-merged with the top-level config. In the example above, the QA agent's effective config is `{ headless: false, timeout: 120 }` — the overrides replace the baseline values, while other baseline settings are preserved.
+
 ## Browser Process Lifecycle
 
 - **Lazy start**: Browser only starts on the first tool call.

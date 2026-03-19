@@ -103,7 +103,53 @@ tools: {
 },
 ```
 
-See each tool's README for the full list of config options.
+### Per-Agent Overrides (toolConfigs)
+
+Beige supports per-agent `toolConfigs` that are deep-merged with the top-level tool config. This lets you share one tool definition but give each agent different capabilities:
+
+```json5
+tools: {
+  chrome: {
+    path: "~/.beige/toolkits/beige-toolkit/tools/chrome",
+    target: "gateway",
+    config: {
+      headless: true,       // baseline: headless
+      timeout: 60,
+    },
+  },
+},
+
+agents: {
+  // QA agent — visible browser, longer timeout
+  qa: {
+    tools: ["chrome"],
+    toolConfigs: {
+      chrome: {
+        headless: false,    // override baseline
+        timeout: 120,
+      },
+    },
+  },
+
+  // Scraper — slim mode, restricted tools
+  scraper: {
+    tools: ["chrome"],
+    toolConfigs: {
+      chrome: {
+        slim: true,
+        allowTools: ["take_snapshot", "navigate_page", "take_screenshot"],
+      },
+    },
+  },
+
+  // Default — uses baseline config as-is
+  assistant: {
+    tools: ["chrome"],
+  },
+},
+```
+
+See each tool's README for the full list of config options and per-agent examples.
 
 ## Documentation Structure
 

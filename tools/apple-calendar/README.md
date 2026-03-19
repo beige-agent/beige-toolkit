@@ -60,6 +60,39 @@ config: {
 }
 ```
 
+### Per-Agent Configuration (toolConfigs)
+
+Use beige's `toolConfigs` to give different agents different calendar permissions:
+
+```json5
+tools: {
+  "apple-calendar": {
+    path: "~/.beige/toolkits/beige-toolkit/tools/apple-calendar",
+    target: "gateway",
+    config: {
+      // Baseline: all commands allowed
+    },
+  },
+},
+
+agents: {
+  // Scheduler agent — full calendar access
+  scheduler: {
+    tools: ["apple-calendar"],
+  },
+
+  // Summary bot — today and tomorrow only
+  summary: {
+    tools: ["apple-calendar"],
+    toolConfigs: {
+      "apple-calendar": {
+        allowedCommands: ["events today", "events tomorrow", "calendars"],
+      },
+    },
+  },
+},
+```
+
 ## Binary Compilation
 
 The tool bundles a Swift source file (`calendar-cli.swift`). On first invocation, if no compiled binary is found, the handler compiles it automatically using `swiftc` (~5–10 seconds). Subsequent calls use the cached binary.
