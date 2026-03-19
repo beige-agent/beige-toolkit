@@ -1,0 +1,5 @@
+{
+  "name": "@beige/tool-github",
+  "private": true,
+  "type": "module"
+}

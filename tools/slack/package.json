@@ -1,0 +1,5 @@
+{
+  "name": "@beige/tool-slack",
+  "private": true,
+  "type": "module"
+}
