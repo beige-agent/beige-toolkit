@@ -1,25 +1,23 @@
 # Slack Tool
 
-Interact with Slack workspaces via the [`slackcli`](https://github.com/shaharia-lab/slackcli) binary installed on the gateway host. Agents pass `slackcli` arguments directly; the tool enforces a permission layer before executing anything.
+Interact with Slack workspaces via the [`slackcli`](https://github.com/shaharia-lab/slackcli) binary installed on the gateway host. Agents pass slackcli arguments directly; the tool enforces a command-level permission layer before executing anything.
+
+## Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `allowCommands` | all commands | If set, only these command paths are permitted. A command path is the leading 1–2 subcommand tokens, e.g. `"messages send"`. Prefix matching: `"messages"` covers all messages subcommands. Omit to allow all (subject to `denyCommands`). |
+| `denyCommands` | see below | Command paths that are always blocked, even if in `allowCommands`. Deny beats allow. Prefix matching applies. |
+| `timeout` | `30` | Timeout in seconds for each slackcli invocation. |
+| `workspace` | *(none)* | Default workspace ID or name. Appended as `--workspace` when not specified by the agent. |
+
+When **no config is provided at all**, a built-in denylist is applied automatically: `auth login`, `auth login-browser`, `auth logout`, `auth remove`, `auth extract-tokens`, `auth parse-curl`, `update`. These are auth-mutating operations that agents should not run autonomously. When **any config is provided** (even just `timeout`), the default denylist is replaced entirely by whatever you configure in `denyCommands`.
 
 ## Prerequisites
 
 | Requirement | Details |
 |---|---|
 | `slackcli` | Must be installed and authenticated on the gateway host |
-
-## Default Configuration
-
-When **no config is provided**, a built-in denylist is applied:
-
-```
-auth login, auth login-browser, auth logout, auth remove,
-auth extract-tokens, auth parse-curl, update
-```
-
-These are auth-mutating and update operations that agents should not run autonomously. `messages send` is intentionally **not** in the default denylist — you must explicitly deny it if you don't want agents to send messages.
-
-When **any config is provided** (even just `timeout`), the default denylist is replaced entirely by whatever you configure.
 
 ## Permission Model
 
@@ -32,31 +30,7 @@ Access is controlled at the **command path** level. A command path is the leadin
 2. `allowCommands` — if set and no entry matches → rejected
 3. Otherwise → permitted
 
-## Configuration
-
-```json5
-tools: {
-  slack: {
-    path: "~/.beige/toolkits/beige-toolkit/tools/slack",
-    target: "gateway",
-    config: {
-      // Allow only specific command paths (omit to allow all)
-      allowCommands: ["conversations list", "conversations read", "messages react"],
-
-      // Always block these command paths (deny beats allow)
-      denyCommands: ["messages send", "messages draft"],
-
-      // Timeout per slackcli call in seconds (default: 30)
-      timeout: 30,
-
-      // Default workspace — appended as --workspace when not specified by agent
-      workspace: "my-workspace",
-    },
-  },
-},
-```
-
-### Config Examples
+## Config Examples
 
 **Read-only agent** (can read everything, cannot send or mutate auth):
 ```json5

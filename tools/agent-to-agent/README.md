@@ -1,55 +1,73 @@
 # Agent-to-Agent Tool
 
-Invoke another Beige agent **or sub-agents (self)** and hold a multi-turn conversation with it. Every call returns the target agent's full response plus a **session key** you can pass back via `--session` to continue the same conversation.
-
-Sub-agent calls (an agent calling itself) work identically — use the special `"SELF"` key in the `targets` config, or list the agent's own name explicitly.
-
-## Default Configuration
-
-**Default deny** — no calls are permitted unless `targets` is explicitly configured. Installing the tool changes nothing until you opt in.
+Invoke another Beige agent (or the same agent as a sub-agent) and hold a multi-turn conversation with it. Each call returns the target agent's full response plus a session key for follow-up turns.
 
 ## Configuration
 
-The `targets` object defines which agents can be called. Each key is a target agent name with an optional per-target config (e.g. `maxDepth` override). The special key `"SELF"` resolves to the calling agent's own name at runtime.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `targets` | `undefined` (no calls permitted) | Map of callable agent names to their config. Each key is a target agent name; value is an object with optional `maxDepth`. The special key `"SELF"` resolves to the calling agent's own name at runtime. When absent or empty, all calls are rejected. |
+| `targets.<name>.maxDepth` | inherits top-level `maxDepth` | Maximum nesting depth for calls to this specific target. Overrides the top-level default when set. |
+| `maxDepth` | `1` | Default maximum nesting depth for targets that don't specify their own. `0` = all calls blocked. `1` = agents may call agents, but sub-agents may not call further. |
 
+No calls are permitted until `targets` is explicitly configured — installing the tool changes nothing until you opt in. When any config is provided (even just `maxDepth`), the `targets` map must still be set to allow calls.
+
+## Prerequisites
+
+No external dependencies. The tool uses beige's internal agent manager and session store.
+
+## The `SELF` Keyword
+
+The special target key `"SELF"` resolves to the calling agent's name at runtime, enabling sub-agent patterns without hardcoding agent names:
+
+- When **coder** calls the tool, `"SELF"` → `"coder"`
+- When **reviewer** calls the tool, `"SELF"` → `"reviewer"`
+
+This is particularly useful in the top-level config — every agent with this tool gets the ability to create sub-agents of itself.
+
+## Depth Limiting
+
+| `maxDepth` | What is allowed |
+|---|---|
+| `0` | No agent-to-agent calls at all for this target |
+| `1` *(default)* | Agents may call agents; sub-agents may **not** call further agents |
+| `2` | Two levels of nesting; agents at depth 2 may not call further agents |
+
+Each target can override the default `maxDepth` independently. For example, you might allow deep nesting for sub-agents (`SELF: { maxDepth: 3 }`) while keeping cross-agent calls shallow.
+
+## Config Examples
+
+**Basic setup** — coder and reviewer can call each other:
 ```json5
 tools: {
   "agent-to-agent": {
     path: "~/.beige/toolkits/beige-toolkit/tools/agent-to-agent",
     target: "gateway",
     config: {
-      // Which agents can be called.
-      // Absent entirely → no agent-to-agent calls are permitted.
       targets: {
-        reviewer: {},                // any agent with this tool can call reviewer
-        "SELF": { maxDepth: 2 },     // any agent can call itself (sub-agent), up to depth 2
+        reviewer: {},
+        coder: {},
       },
-
-      // Default maximum nesting depth for targets that don't specify their own.
-      // Default: 1.
       maxDepth: 1,
     },
   },
 },
 
 agents: {
-  coder: {
-    tools: ["agent-to-agent"],
-  },
-  reviewer: {
-    tools: ["agent-to-agent"],
-  },
+  coder:    { tools: ["agent-to-agent"] },
+  reviewer: { tools: ["agent-to-agent"] },
 },
 ```
 
-### The `SELF` Keyword
-
-The special target key `"SELF"` resolves to the calling agent's name at runtime. This enables sub-agent patterns without hardcoding agent names:
-
-- When **coder** calls the tool, `"SELF"` → `"coder"`
-- When **reviewer** calls the tool, `"SELF"` → `"reviewer"`
-
-This is particularly useful in the top-level config — every agent with this tool gets the ability to create sub-agents of itself.
+**Sub-agent support** — every agent can call itself:
+```json5
+config: {
+  targets: {
+    "SELF": { maxDepth: 2 },
+    reviewer: {},
+  },
+},
+```
 
 ### Per-Agent Configuration (toolConfigs)
 
@@ -103,16 +121,6 @@ agents: {
 ```
 
 > **Note:** `toolConfigs` values are deep-merged with the top-level config. In the example above, coder's effective targets are `{ "SELF": {}, reviewer: {} }` — the baseline `SELF` entry is preserved and `reviewer` is added.
-
-### Depth Limiting
-
-| `maxDepth` | What is allowed |
-|---|---|
-| `0` | No agent-to-agent calls at all for this target |
-| `1` *(default)* | Agents may call agents; sub-agents may **not** call further agents |
-| `2` | Two levels of nesting; agents at depth 2 may not call further agents |
-
-Each target can override the default `maxDepth` independently. For example, you might allow deep nesting for sub-agents (`SELF: { maxDepth: 3 }`) while keeping cross-agent calls shallow.
 
 ## Security Model
 

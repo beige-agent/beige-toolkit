@@ -1,8 +1,15 @@
 # GitHub Tool
 
-Interact with GitHub using the [`gh` CLI](https://cli.github.com/). The tool routes all commands to `gh` running on the gateway host — no token configuration is needed inside Beige; authentication is managed by `gh` itself.
+Interact with GitHub using the [`gh` CLI](https://cli.github.com/). Routes all commands to `gh` running on the gateway host — authentication is managed by `gh` itself, no token configuration needed in Beige. Repository deletion (`repo delete`) is permanently blocked regardless of configuration.
 
-Supports the full `gh` command surface: repositories, issues, pull requests, releases, workflow runs, and raw API access.
+## Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `allowedCommands` | all commands except `api` | Whitelist of top-level `gh` subcommands (e.g. `"repo"`, `"issue"`, `"pr"`). Set explicitly to include `"api"` for raw API access. |
+| `deniedCommands` | *(none)* | Blacklist of top-level `gh` subcommands. Always blocked, even if in `allowedCommands`. Deny beats allow. |
+
+All `gh` subcommands are permitted by default **except `api`**, which is excluded because it allows arbitrary HTTP methods and GraphQL mutations. When `allowedCommands` is set explicitly, it fully replaces the default list.
 
 ## Prerequisites
 
@@ -11,22 +18,9 @@ Supports the full `gh` command surface: repositories, issues, pull requests, rel
 | `gh` CLI | Must be installed on the **gateway host** ([install guide](https://cli.github.com/)) |
 | Authentication | Run `gh auth login` on the host before starting Beige |
 
-The tool inherits the gateway process's environment, so `gh` picks up `~/.config/gh/` automatically. No GitHub token is stored in Beige config.
+The tool inherits the gateway process's environment, so `gh` picks up `~/.config/gh/` automatically.
 
-## Default Configuration
-
-Out of the box, all `gh` subcommands are permitted **except `api`**. The `api` subcommand is excluded by default because it allows arbitrary HTTP methods and GraphQL mutations against any GitHub endpoint. Repository deletion (`repo delete`) is permanently blocked regardless of configuration.
-
-## Access Control
-
-Restrict which top-level `gh` subcommands an agent may use via `config`:
-
-| Config field | Type | Default | Description |
-|---|---|---|---|
-| `allowedCommands` | `string \| string[]` | all commands except `api` | Only these subcommands are permitted. |
-| `deniedCommands` | `string \| string[]` | *(none)* | Always blocked. Deny beats allow. |
-
-### Examples
+## Config Examples
 
 **Read-only agent** (list and view, no mutations):
 ```json5
@@ -94,34 +88,16 @@ agents: {
 },
 ```
 
-## Setup
-
-Add to your agent in `config.json5`:
-
-```json5
-tools: {
-  github: {
-    path: "~/.beige/toolkits/beige-toolkit/tools/github",
-    target: "gateway",
-  },
-},
-agents: {
-  assistant: {
-    tools: ["github"],
-  },
-}
-```
-
 ## Error Reference
 
 | Error | Cause |
 |---|---|
 | `Permission denied: subcommand 'X' is not allowed` | Subcommand blocked by allow/deny config |
+| `Permission denied: 'repo delete' is permanently blocked` | Repository deletion is always blocked |
 | Command fails with `gh` error | `gh` is not installed or not authenticated on the gateway host |
 
 ## Implementation Details
 
 - **Target**: Gateway (runs on the host, not in the sandbox)
 - **Dependency**: `gh` CLI
-- **Protocol**: Tool launcher calls back to gateway via Unix socket
 - **Stateless**: Each invocation spawns a fresh `gh` process

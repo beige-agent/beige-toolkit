@@ -1,8 +1,25 @@
 # Chrome Tool
 
-Control a Chrome browser from within Beige agents. Wraps [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) — giving agents full access to navigation, DOM inspection, JavaScript evaluation, screenshots, network monitoring, performance analysis, and more.
+Control a Chrome browser from within Beige agents. Wraps [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) — giving agents full access to navigation, DOM inspection, JavaScript evaluation, screenshots, network monitoring, and performance analysis. Each agent gets its own persistent Chrome profile.
 
-Each agent gets its own **persistent Chrome profile** — cookies, logins, and localStorage survive gateway restarts.
+## Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `slim` | `false` | Launch in slim mode — only navigate, evaluate, and screenshot tools are available. Much lower token usage. |
+| `headless` | `false` | Launch Chrome headlessly (no visible window). |
+| `channel` | `"stable"` | Chrome channel: `"stable"`, `"beta"`, `"dev"`, or `"canary"`. |
+| `viewport` | unset (Chrome default) | Browser viewport size as `WxH`, e.g. `"1280x720"`. |
+| `idleTimeoutMinutes` | `30` | Automatically close the browser process after this many minutes of inactivity. Next call respawns it. |
+| `version` | `"latest"` | `chrome-devtools-mcp` npm version to use via npx. |
+| `allowTools` | all tools | If set, only these MCP tool names are callable. Omit to allow all. |
+| `denyTools` | *(none)* | These MCP tool names are always blocked, even if in `allowTools`. Deny beats allow. |
+| `timeout` | `60` | Timeout per MCP tool call in seconds. |
+| `noUsageStatistics` | `true` | Opt out of Google usage statistics collection. |
+| `proxyServer` | *(none)* | Proxy server URL, e.g. `"http://proxy:8080"`. |
+| `acceptInsecureCerts` | `false` | Accept insecure TLS certificates. |
+
+All MCP tools are permitted by default (no allow/deny restrictions). The browser launches lazily on first use and auto-closes after the idle timeout.
 
 ## Prerequisites
 
@@ -11,64 +28,15 @@ Each agent gets its own **persistent Chrome profile** — cookies, logins, and l
 | Google Chrome | Installed on the gateway host (stable channel by default) |
 | Node.js + `npx` | Required to run `chrome-devtools-mcp` |
 
-## Default Configuration
+## Browser Process Lifecycle
 
-- All MCP tools are permitted (no allow/deny restrictions)
-- Browser launches on first use (lazy start)
-- Idle timeout: 30 minutes (auto-closes, respawns on next call)
-- Channel: `stable`
-- Headless: `false` (visible browser window)
-- Google usage statistics: disabled
+- **Lazy start**: Browser only starts on the first tool call.
+- **Persistent per agent**: One process per agent, reused across all calls.
+- **Idle timeout**: Process killed after `idleTimeoutMinutes` of inactivity (default: 30). Next call respawns it.
+- **Crash recovery**: If Chrome crashes, the next call starts a fresh browser automatically.
+- **Profile persistence**: `~/.beige/browser-profiles/<agentName>/` is never deleted — logins and storage survive restarts.
 
-## Configuration
-
-```json5
-tools: {
-  chrome: {
-    path: "~/.beige/toolkits/beige-toolkit/tools/chrome",
-    target: "gateway",
-    config: {
-      // Launch in slim mode (only navigate/evaluate/screenshot). Default: false.
-      slim: false,
-
-      // Run Chrome headlessly. Default: false.
-      headless: false,
-
-      // Chrome channel: "stable" | "beta" | "dev" | "canary". Default: "stable".
-      channel: "stable",
-
-      // Viewport: "WxH". Default: unset.
-      viewport: "1280x720",
-
-      // Kill browser after N minutes idle. Default: 30.
-      idleTimeoutMinutes: 30,
-
-      // chrome-devtools-mcp npm version. Default: "latest".
-      version: "latest",
-
-      // Only these MCP tool names are callable (omit = allow all).
-      allowTools: ["take_snapshot", "navigate_page", "take_screenshot"],
-
-      // These MCP tool names are always blocked (deny beats allow).
-      denyTools: ["evaluate_script"],
-
-      // Timeout per MCP call in seconds. Default: 60.
-      timeout: 60,
-
-      // Opt out of Google usage statistics. Default: true.
-      noUsageStatistics: true,
-
-      // Proxy server. Optional.
-      proxyServer: "http://proxy:8080",
-
-      // Accept insecure TLS certs. Default: false.
-      acceptInsecureCerts: false,
-    },
-  },
-},
-```
-
-### Config Examples
+## Config Examples
 
 **Read-only browser agent** (can inspect but not interact):
 ```json5
@@ -153,14 +121,6 @@ agents: {
 ```
 
 > **Note:** `toolConfigs` values are deep-merged with the top-level config. In the example above, the QA agent's effective config is `{ headless: false, timeout: 120 }` — the overrides replace the baseline values, while other baseline settings are preserved.
-
-## Browser Process Lifecycle
-
-- **Lazy start**: Browser only starts on the first tool call.
-- **Persistent per agent**: One process per agent, reused across all calls.
-- **Idle timeout**: Process killed after `idleTimeoutMinutes` of inactivity (default: 30). Next call respawns it.
-- **Crash recovery**: If Chrome crashes, the next call starts a fresh browser automatically.
-- **Profile persistence**: `~/.beige/browser-profiles/<agentName>/` is never deleted — logins and storage survive restarts.
 
 ## Security Model
 
