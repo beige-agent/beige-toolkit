@@ -1,0 +1,5 @@
+{
+  "name": "@beige/tool-confluence",
+  "private": true,
+  "type": "module"
+}

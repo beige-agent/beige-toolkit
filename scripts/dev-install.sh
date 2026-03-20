@@ -32,7 +32,7 @@ done
 echo "[dev-install] Installing toolkit from: $TOOLKIT_ROOT"
 echo "[dev-install] Using beige command: $BEIGE_CMD"
 
-$BEIGE_CMD install "$TOOLKIT_ROOT"
+$BEIGE_CMD tools install "$TOOLKIT_ROOT"
 
 echo "[dev-install] Done. Restart the gateway to pick up changes:"
 echo "  $BEIGE_CMD gateway restart"

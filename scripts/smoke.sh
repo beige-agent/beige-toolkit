@@ -12,9 +12,6 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$ROOT"
 
-echo "[smoke] Checking versions are in sync..."
-pnpm check-versions
-
 echo "[smoke] Typechecking..."
 pnpm typecheck
 
