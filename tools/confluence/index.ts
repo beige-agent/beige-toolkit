@@ -604,6 +604,15 @@ export async function enforceSpacePolicy(
     return checkSpacePermission(spaceKey, "write", config);
   }
 
+  // ── create-child — title is first positional, parent ID is second ────────
+  if (subcommand === "create-child") {
+    const parentId = extractSecondPositional(args);
+    if (!parentId) return { allowed: true }; // malformed call, let confluence handle it
+    const spaceKey = await resolveSpaceKey(parentId, executor, timeoutMs, cache, profileArgs);
+    if (!spaceKey) return { allowed: true }; // can't resolve → fail open
+    return checkSpacePermission(spaceKey, "write", config);
+  }
+
   // ── copy-tree — two page IDs (source and target parent) ─────────────────
   // Both must clear the write space check.
   if (subcommand === "copy-tree") {

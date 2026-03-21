@@ -636,6 +636,58 @@ describe("enforceSpacePolicy — write commands (Tier 2, page ID)", () => {
       "create-child", ["create-child", "Title", "333"], config, exec, 5000, new Map(), []
     );
     expect(r.allowed).toBe(true);
+    // Verify info lookup actually happened (not just failing open)
+    expect(exec.calls.filter(c => c.args.includes("info"))).toHaveLength(1);
+  });
+
+  it("blocks create-child when parent resolves to forbidden write space", async () => {
+    const exec = makeInfoExecutor({ "333": "READONLY" });
+    const r = await enforceSpacePolicy(
+      "create-child", ["create-child", "Title", "333"], config, exec, 5000, new Map(), []
+    );
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("READONLY");
+  });
+});
+
+describe("enforceSpacePolicy — create-child (parent page ID)", () => {
+  const config: ConfluenceConfig = { allowWriteSpaces: ["DRAFTS"] };
+
+  it("allows create-child when parent resolves to permitted space", async () => {
+    const exec = makeInfoExecutor({ "333": "DRAFTS" });
+    const r = await enforceSpacePolicy(
+      "create-child", ["create-child", "Title", "333"], config, exec, 5000, new Map(), []
+    );
+    expect(r.allowed).toBe(true);
+  });
+
+  it("blocks create-child when parent resolves to forbidden space", async () => {
+    const exec = makeInfoExecutor({ "333": "SECRET" });
+    const r = await enforceSpacePolicy(
+      "create-child", ["create-child", "Title", "333"], config, exec, 5000, new Map(), []
+    );
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("SECRET");
+    expect(r.reason).toContain("allowWriteSpaces");
+  });
+
+  it("allows create-child when parent is a URL with permitted space (no info call)", async () => {
+    const exec = makeExecutor();
+    const r = await enforceSpacePolicy(
+      "create-child",
+      ["create-child", "Title", "https://example.atlassian.net/wiki/spaces/DRAFTS/pages/333"],
+      config, exec, 5000, new Map(), []
+    );
+    expect(r.allowed).toBe(true);
+    expect(exec.calls).toHaveLength(0);
+  });
+
+  it("fails open when no parent ID is provided", async () => {
+    const exec = makeExecutor();
+    const r = await enforceSpacePolicy(
+      "create-child", ["create-child", "Title"], config, exec, 5000, new Map(), []
+    );
+    expect(r.allowed).toBe(true);
   });
 });
 
@@ -930,6 +982,22 @@ describe("handler — space enforcement via allowWriteSpaces", () => {
     expect(result.output).toContain("PRIVATE");
     // info was called, update was not
     expect(exec.calls).toHaveLength(1);
+  });
+
+  it("blocks create-child when parent resolves to forbidden space", async () => {
+    const exec = makeInfoExecutor({ "444": "SECRET" });
+    const handler = createHandler({ allowWriteSpaces: ["DOCS"] }, { executor: exec });
+    const result = await handler(["create-child", "New Page", "444"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Permission denied");
+    expect(result.output).toContain("SECRET");
+  });
+
+  it("allows create-child when parent resolves to permitted space", async () => {
+    const exec = makeInfoExecutor({ "444": "DOCS" }, "created");
+    const handler = createHandler({ allowWriteSpaces: ["DOCS"] }, { executor: exec });
+    const result = await handler(["create-child", "New Page", "444"]);
+    expect(result.exitCode).toBe(0);
   });
 });
 
