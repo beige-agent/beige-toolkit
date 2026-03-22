@@ -1,0 +1,72 @@
+{
+  "name": "git",
+  "description": "Run git commands against the agent's workspace on the gateway host. Supports clone, pull, push, commit, and more. Authentication uses a per-agent ed25519 SSH key stored at ~/.beige/agents/<name>/ssh/id_ed25519 — never the gateway operator's own SSH keys. Repository deletion and git config mutation are permanently blocked. Force-push is blocked by default.",
+  "commands": [
+    "clone <url> [dir]                         — Clone a repository into the workspace",
+    "pull [remote] [branch]                    — Pull from remote",
+    "push [remote] [branch]                    — Push to remote",
+    "fetch [remote]                            — Fetch from remote",
+    "add <pathspec...>                          — Stage files",
+    "commit -m <message>                       — Commit staged changes",
+    "status                                    — Show working tree status",
+    "diff [pathspec...]                        — Show unstaged changes",
+    "diff --staged [pathspec...]               — Show staged changes",
+    "log [--oneline] [--limit <n>]             — Show commit history",
+    "checkout <branch>                         — Switch branch",
+    "checkout -b <branch>                      — Create and switch branch",
+    "branch [-a]                               — List branches",
+    "merge <branch>                            — Merge a branch",
+    "rebase <branch>                           — Rebase onto a branch",
+    "stash [push|pop|list]                     — Stash changes",
+    "remote [-v]                               — List remotes",
+    "tag <name>                                — Create a tag"
+  ],
+  "target": "gateway",
+  "config": {
+    "allowedCommands": {
+      "type": "string | string[]",
+      "description": "Whitelist of git subcommands the agent may run. Defaults to a safe read/write set when absent. 'config' is always blocked regardless of this setting.",
+      "example": ["clone", "pull", "push", "commit", "add", "status", "diff", "log"]
+    },
+    "deniedCommands": {
+      "type": "string | string[]",
+      "description": "Blacklist of git subcommands. Always blocked even if present in allowedCommands. Deny beats allow.",
+      "example": ["push"]
+    },
+    "allowedRemotes": {
+      "type": "string | string[]",
+      "description": "Glob patterns matched against remote URLs. If set, push/fetch/pull/clone are only permitted to matching remotes. Omit to allow all remotes.",
+      "example": ["github.com/myorg/*"]
+    },
+    "allowForcePush": {
+      "type": "boolean",
+      "description": "Allow git push --force and --force-with-lease. Default: false.",
+      "default": false
+    },
+    "identity": {
+      "type": "object",
+      "description": "Git commit author identity. If omitted, falls back to whatever git finds in the workspace .git/config.",
+      "properties": {
+        "name": { "type": "string", "description": "GIT_AUTHOR_NAME / GIT_COMMITTER_NAME" },
+        "email": { "type": "string", "description": "GIT_AUTHOR_EMAIL / GIT_COMMITTER_EMAIL" },
+        "nameEnv": { "type": "string", "description": "Env var name whose value is used as the author name" },
+        "emailEnv": { "type": "string", "description": "Env var name whose value is used as the author email" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "description": "Authentication override. When absent, the tool uses the per-agent SSH key at agentDir/ssh/id_ed25519 (recommended). Use this only when you need a non-default key path or HTTPS token auth.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["agent-ssh", "ssh", "https"],
+          "description": "'agent-ssh' (default) — uses agentDir/ssh/id_ed25519. 'ssh' — uses a literal sshKeyPath. 'https' — uses a PAT from an env var."
+        },
+        "sshKeyPath": { "type": "string", "description": "Absolute path to SSH private key. Only used when mode is 'ssh'." },
+        "sshKnownHostsPath": { "type": "string", "description": "Absolute path to known_hosts file. Only used when mode is 'ssh'. Defaults to agentDir/ssh/known_hosts." },
+        "tokenEnv": { "type": "string", "description": "Name of gateway env var holding the HTTPS PAT. Only used when mode is 'https'." },
+        "userEnv": { "type": "string", "description": "Name of gateway env var holding the HTTPS username. Defaults to 'x-access-token'." }
+      }
+    }
+  }
+}
