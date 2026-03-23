@@ -17,13 +17,15 @@ Add to your agent's config:
 {
   tools: {
     wrangler: {
-      apiToken: "${CLOUDFLARE_API_TOKEN}",  // Required
-      accountId: "${CLOUDFLARE_ACCOUNT_ID}", // Optional
-      allowCommands: ["deploy", "tail", "d1", "kv"],
-      denyCommands: ["d1 database destroy"],
-      timeout: 180
-    }
-  }
+      config: {
+        apiToken: "${CLOUDFLARE_API_TOKEN}",  // Required
+        accountId: "${CLOUDFLARE_ACCOUNT_ID}", // Optional
+        allowCommands: ["deploy", "tail", "d1", "kv"],
+        denyCommands: ["d1 database destroy"],
+        timeout: 180,
+      },
+    },
+  },
 }
 ```
 
@@ -61,8 +63,14 @@ wrangler deploy --env production            →  "deploy"
 
 ```json5
 {
-  apiToken: "${CF_READ_TOKEN}",
-  allowCommands: ["d1 database list", "d1 execute", "kv namespace list", "kv key list"]
+  tools: {
+    wrangler: {
+      config: {
+        apiToken: "${CF_READ_TOKEN}",
+        allowCommands: ["d1 database list", "d1 execute", "kv namespace list", "kv key list"],
+      },
+    },
+  },
 }
 ```
 
@@ -70,8 +78,14 @@ wrangler deploy --env production            →  "deploy"
 
 ```json5
 {
-  apiToken: "${CF_TOKEN}",
-  denyCommands: ["d1 database destroy", "r2 bucket delete", "kv namespace delete"]
+  tools: {
+    wrangler: {
+      config: {
+        apiToken: "${CF_TOKEN}",
+        denyCommands: ["d1 database destroy", "r2 bucket delete", "kv namespace delete"],
+      },
+    },
+  },
 }
 ```
 
@@ -79,8 +93,14 @@ wrangler deploy --env production            →  "deploy"
 
 ```json5
 {
-  apiToken: "${CF_DEPLOY_TOKEN}",
-  allowCommands: ["deploy", "tail"]
+  tools: {
+    wrangler: {
+      config: {
+        apiToken: "${CF_DEPLOY_TOKEN}",
+        allowCommands: ["deploy", "tail"],
+      },
+    },
+  },
 }
 ```
 

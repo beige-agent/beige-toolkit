@@ -62,8 +62,14 @@ swiftc calendar-cli.swift -o calendar-cli -O
 
 To use a pre-compiled binary:
 ```json5
-config: {
-  binaryPath: "/usr/local/bin/calendar-cli",
+{
+  tools: {
+    "apple-calendar": {
+      config: {
+        binaryPath: "/usr/local/bin/calendar-cli",
+      },
+    },
+  },
 }
 ```
 
@@ -71,22 +77,40 @@ config: {
 
 **Today-only agent:**
 ```json5
-config: {
-  allowedCommands: ["events today"],
+{
+  tools: {
+    "apple-calendar": {
+      config: {
+        allowedCommands: ["events today"],
+      },
+    },
+  },
 }
 ```
 
 **Schedule viewer (no search/range):**
 ```json5
-config: {
-  allowedCommands: ["events today", "events tomorrow", "events date", "calendars"],
+{
+  tools: {
+    "apple-calendar": {
+      config: {
+        allowedCommands: ["events today", "events tomorrow", "events date", "calendars"],
+      },
+    },
+  },
 }
 ```
 
 **Everything except search:**
 ```json5
-config: {
-  deniedCommands: ["events search"],
+{
+  tools: {
+    "apple-calendar": {
+      config: {
+        deniedCommands: ["events search"],
+      },
+    },
+  },
 }
 ```
 

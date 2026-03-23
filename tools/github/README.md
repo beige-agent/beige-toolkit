@@ -65,31 +65,54 @@ When no `token` is configured, the tool inherits the gateway process's environme
 
 **Agent with its own token:**
 ```json5
-config: {
-  token: "ghp_yourPersonalAccessToken",
-  allowedCommands: ["repo", "issue", "pr"],
+{
+  tools: {
+    github: {
+      config: {
+        token: "ghp_yourPersonalAccessToken",
+        allowedCommands: ["repo", "issue", "pr"],
+      },
+    },
+  },
 }
 ```
 
 **Read-only agent** (list and view, no mutations):
 ```json5
-config: {
-  allowedCommands: ["repo", "issue", "pr", "release", "run"],
-  deniedCommands: [],
+{
+  tools: {
+    github: {
+      config: {
+        allowedCommands: ["repo", "issue", "pr", "release", "run"],
+      },
+    },
+  },
 }
 ```
 
 **Issue triage bot** (issues only):
 ```json5
-config: {
-  allowedCommands: ["issue"],
+{
+  tools: {
+    github: {
+      config: {
+        allowedCommands: ["issue"],
+      },
+    },
+  },
 }
 ```
 
 **Enable raw API access** alongside standard commands:
 ```json5
-config: {
-  allowedCommands: ["repo", "issue", "pr", "api"],
+{
+  tools: {
+    github: {
+      config: {
+        allowedCommands: ["repo", "issue", "pr", "api"],
+      },
+    },
+  },
 }
 ```
 

@@ -60,24 +60,42 @@ All MCP tools are permitted by default (no allow/deny restrictions). The browser
 
 **Read-only browser agent** (can inspect but not interact):
 ```json5
-config: {
-  allowTools: ["take_snapshot", "take_screenshot", "list_pages",
-               "list_console_messages", "list_network_requests"],
+{
+  tools: {
+    chrome: {
+      config: {
+        allowTools: ["take_snapshot", "take_screenshot", "list_pages",
+                     "list_console_messages", "list_network_requests"],
+      },
+    },
+  },
 }
 ```
 
 **Slim headless agent** (minimal token usage, no visible window):
 ```json5
-config: {
-  slim: true,
-  headless: true,
+{
+  tools: {
+    chrome: {
+      config: {
+        slim: true,
+        headless: true,
+      },
+    },
+  },
 }
 ```
 
 **No JavaScript evaluation** (automation without script injection):
 ```json5
-config: {
-  denyTools: ["evaluate_script"],
+{
+  tools: {
+    chrome: {
+      config: {
+        denyTools: ["evaluate_script"],
+      },
+    },
+  },
 }
 ```
 
@@ -152,16 +170,28 @@ The first path that exists on disk wins.  If nothing is found, `chrome-devtools-
 To pin a specific binary regardless of what is installed:
 
 ```json5
-config: {
-  executablePath: "/usr/bin/chromium-browser",
+{
+  tools: {
+    chrome: {
+      config: {
+        executablePath: "/usr/bin/chromium-browser",
+      },
+    },
+  },
 }
 ```
 
 To disable the Chromium fallback entirely (fail if Chrome is not present):
 
 ```json5
-config: {
-  fallbackToChromium: false,
+{
+  tools: {
+    chrome: {
+      config: {
+        fallbackToChromium: false,
+      },
+    },
+  },
 }
 ```
 
@@ -178,9 +208,15 @@ On Linux you can route the browser window to a specific TigerVNC (or other X11) 
 **Config:**
 
 ```json5
-config: {
-  headless: false,
-  display: ":1",   // open on TigerVNC virtual screen 1
+{
+  tools: {
+    chrome: {
+      config: {
+        headless: false,
+        display: ":1",   // open on TigerVNC virtual screen 1
+      },
+    },
+  },
 }
 ```
 
