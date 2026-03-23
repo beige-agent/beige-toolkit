@@ -249,24 +249,27 @@ describe("buildIdentityEnv", () => {
     expect(env.GIT_COMMITTER_EMAIL).toBe("agent@example.com");
   });
 
-  it("reads name from env var", () => {
-    vi.stubEnv("TEST_GIT_NAME", "Env Agent");
-    const env = buildIdentityEnv({ nameEnv: "TEST_GIT_NAME", email: "x@y.com" });
-    expect(env.GIT_AUTHOR_NAME).toBe("Env Agent");
+  it("sets name and email from direct values", () => {
+    const env = buildIdentityEnv({ name: "Test Agent", email: "test@example.com" });
+    expect(env.GIT_AUTHOR_NAME).toBe("Test Agent");
+    expect(env.GIT_COMMITTER_NAME).toBe("Test Agent");
+    expect(env.GIT_AUTHOR_EMAIL).toBe("test@example.com");
+    expect(env.GIT_COMMITTER_EMAIL).toBe("test@example.com");
   });
 
-  it("env var takes precedence over literal", () => {
-    vi.stubEnv("TEST_GIT_NAME", "From Env");
-    const env = buildIdentityEnv({ name: "From Literal", nameEnv: "TEST_GIT_NAME" });
-    expect(env.GIT_AUTHOR_NAME).toBe("From Env");
+  it("sets only name", () => {
+    const env = buildIdentityEnv({ name: "Test Agent" });
+    expect(env.GIT_AUTHOR_NAME).toBe("Test Agent");
+    expect(env.GIT_AUTHOR_EMAIL).toBeUndefined();
   });
 
-  it("falls back to literal when env var is unset", () => {
-    const env = buildIdentityEnv({ name: "Fallback", nameEnv: "DEFINITELY_NOT_SET_VAR" });
-    expect(env.GIT_AUTHOR_NAME).toBe("Fallback");
+  it("sets only email", () => {
+    const env = buildIdentityEnv({ email: "test@example.com" });
+    expect(env.GIT_AUTHOR_EMAIL).toBe("test@example.com");
+    expect(env.GIT_AUTHOR_NAME).toBeUndefined();
   });
 
-  it("omits fields when neither literal nor env var is set", () => {
+  it("omits fields when not set", () => {
     const env = buildIdentityEnv({});
     expect(env.GIT_AUTHOR_NAME).toBeUndefined();
     expect(env.GIT_AUTHOR_EMAIL).toBeUndefined();
@@ -348,14 +351,9 @@ describe("buildAuthEnv — explicit ssh mode", () => {
 });
 
 describe("buildAuthEnv — https mode", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it("writes an askpass script and sets GIT_ASKPASS", () => {
-    vi.stubEnv("BEIGE_CODER_GIT_TOKEN", "ghp_test123");
     const { env, cleanup } = buildAuthEnv(
-      { auth: { mode: "https", tokenEnv: "BEIGE_CODER_GIT_TOKEN" } },
+      { auth: { mode: "https", token: "ghp_test123" } },
       {}
     );
     expect(env.GIT_ASKPASS).toBeDefined();
@@ -365,9 +363,8 @@ describe("buildAuthEnv — https mode", () => {
   });
 
   it("cleanup removes the askpass script", async () => {
-    vi.stubEnv("BEIGE_CODER_GIT_TOKEN", "ghp_test123");
     const { env, cleanup } = buildAuthEnv(
-      { auth: { mode: "https", tokenEnv: "BEIGE_CODER_GIT_TOKEN" } },
+      { auth: { mode: "https", token: "ghp_test123" } },
       {}
     );
     const scriptPath = env.GIT_ASKPASS!;

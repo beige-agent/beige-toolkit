@@ -34,9 +34,9 @@
  *     config use the same key — useful for read-only shared deploy keys.
  *
  *   "https"
- *     Reads a PAT from a gateway env var (config.auth.tokenEnv). Injects it
- *     via a transient GIT_ASKPASS helper script that is created, used, and
- *     deleted within the single git invocation. No credential store is touched.
+ *     Uses a PAT from config.auth.token. Injects it via a transient
+ *     GIT_ASKPASS helper script that is created, used, and deleted within
+ *     the single git invocation. No credential store is touched.
  *
  * SSH invocations always set IdentitiesOnly=yes so the gateway operator's
  * own ~/.ssh/ keys and any loaded ssh-agent keys are completely ignored.
@@ -98,7 +98,7 @@ export interface GitAuthConfig {
   /**
    * "agent-ssh" — derive key from agentDir/ssh/ (default, recommended).
    * "ssh"       — use a literal sshKeyPath from config.
-   * "https"     — use a PAT from a gateway env var.
+   * "https"     — use a PAT from config.token.
    */
   mode?: "agent-ssh" | "ssh" | "https";
 
@@ -114,25 +114,23 @@ export interface GitAuthConfig {
   sshKnownHostsPath?: string;
 
   /**
-   * Gateway env var name holding the HTTPS PAT. Only used when mode is "https".
-   * Example: "BEIGE_CODER_GIT_TOKEN"
+   * HTTPS PAT (Personal Access Token). Only used when mode is "https".
+   * Can use ${ENV_VAR} for injection by the config system.
    */
-  tokenEnv?: string;
+  token?: string;
 
   /**
-   * Gateway env var name holding the HTTPS username.
-   * Only used when mode is "https". Defaults to "x-access-token".
+   * HTTPS username. Only used when mode is "https".
+   * Defaults to "x-access-token". Can use ${ENV_VAR} for injection.
    */
-  userEnv?: string;
+  user?: string;
 }
 
 export interface GitIdentityConfig {
+  /** Git author/committer name. Can use ${ENV_VAR} for injection. */
   name?: string;
+  /** Git author/committer email. Can use ${ENV_VAR} for injection. */
   email?: string;
-  /** Gateway env var name whose value is used as the author name. */
-  nameEnv?: string;
-  /** Gateway env var name whose value is used as the author email. */
-  emailEnv?: string;
 }
 
 export interface GitConfig {
@@ -423,15 +421,12 @@ export function buildAuthEnv(
   const mode = auth.mode ?? "agent-ssh";
 
   if (mode === "https") {
-    const tokenEnv = auth.tokenEnv ?? "GIT_TOKEN";
-    const userEnv = auth.userEnv;
-
-    const token = process.env[tokenEnv] ?? "";
-    const user = (userEnv ? process.env[userEnv] : undefined) ?? "x-access-token";
+    const token = auth.token ?? "";
+    const user = auth.user ?? "x-access-token";
 
     if (!token) {
       console.warn(
-        `[git tool] HTTPS mode: env var '${tokenEnv}' is not set on the gateway. ` +
+        `[git tool] HTTPS mode: token is not configured. ` +
         `Push/clone to private repos will fail.`
       );
     }
@@ -504,20 +499,13 @@ export function buildIdentityEnv(identity: GitIdentityConfig | undefined): Recor
 
   const env: Record<string, string> = {};
 
-  const name =
-    (identity.nameEnv ? process.env[identity.nameEnv] : undefined) ??
-    identity.name;
-  const email =
-    (identity.emailEnv ? process.env[identity.emailEnv] : undefined) ??
-    identity.email;
-
-  if (name) {
-    env.GIT_AUTHOR_NAME = name;
-    env.GIT_COMMITTER_NAME = name;
+  if (identity.name) {
+    env.GIT_AUTHOR_NAME = identity.name;
+    env.GIT_COMMITTER_NAME = identity.name;
   }
-  if (email) {
-    env.GIT_AUTHOR_EMAIL = email;
-    env.GIT_COMMITTER_EMAIL = email;
+  if (identity.email) {
+    env.GIT_AUTHOR_EMAIL = identity.email;
+    env.GIT_COMMITTER_EMAIL = identity.email;
   }
 
   return env;
