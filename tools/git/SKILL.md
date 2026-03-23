@@ -2,6 +2,50 @@
 
 Run git commands in your workspace. All commands operate on `/workspace` — the same directory where you read and write files.
 
+## ⚠️ Critical: Path Handling
+
+**The git tool runs on the gateway host, NOT inside your sandbox container.**
+
+Your `/workspace` inside the container is a bind mount of the host's `~/.beige/agents/<name>/workspace/`. The git tool executes on the host with that directory as its working directory.
+
+### ✅ DO: Use Relative Paths
+
+```sh
+# All of these work correctly:
+git status
+git add src/foo.ts
+git commit -m "feat: add feature"
+git diff myrepo/src/main.ts
+git log myrepo
+```
+
+Relative paths are resolved from `/workspace` (the workspace root).
+
+### ❌ DO NOT: Use Absolute Container Paths
+
+```sh
+# These will FAIL because /workspace/... doesn't exist on the host:
+git status /workspace/myrepo          # ❌ WRONG
+git add /workspace/myrepo/src/foo.ts  # ❌ WRONG
+git -C /workspace/myrepo status       # ❌ WRONG
+```
+
+The host has no `/workspace` directory — that path only exists inside your container.
+
+### Working with Subdirectories
+
+If you cloned a repo into a subdirectory:
+
+```sh
+# Clone creates /workspace/myrepo
+git clone https://github.com/myorg/myrepo.git myrepo
+
+# Now work relative to workspace root:
+git -C myrepo status          # ✅ Works
+git status myrepo             # ✅ Works (inside myrepo)
+git add myrepo/src/foo.ts     # ✅ Works
+```
+
 ## Calling Convention
 
 ```sh
@@ -10,70 +54,70 @@ Run git commands in your workspace. All commands operate on `/workspace` — the
 
 ## Common Workflows
 
+### Clone a repository
+
+```sh
+# Clone into current directory (workspace must be empty or use .)
+git clone https://github.com/myorg/myrepo.git .
+
+# Clone into a subdirectory
+git clone https://github.com/myorg/myrepo.git myrepo
+```
+
 ### Check status and stage files
 
 ```sh
-/tools/bin/git status
-/tools/bin/git add .
-/tools/bin/git add src/foo.ts tests/foo.test.ts
+git status
+git add .
+git add src/foo.ts tests/foo.test.ts
 ```
 
 ### Commit
 
 ```sh
-/tools/bin/git commit -m "feat: add new feature"
-/tools/bin/git commit -m "fix: correct edge case in parser"
+git commit -m "feat: add new feature"
+git commit -m "fix: correct edge case in parser"
 ```
 
 ### Push and pull
 
 ```sh
-/tools/bin/git push origin main
-/tools/bin/git pull
-/tools/bin/git pull origin main
-```
-
-### Clone a repository
-
-```sh
-# Clone into /workspace (must be empty or the . form)
-/tools/bin/git clone https://github.com/myorg/myrepo.git .
-
-# Clone into a subdirectory
-/tools/bin/git clone https://github.com/myorg/myrepo.git myrepo
+git push origin main
+git pull
+git pull origin main
 ```
 
 ### Branches
 
 ```sh
-/tools/bin/git checkout -b feat/my-feature
-/tools/bin/git branch -a
-/tools/bin/git checkout main
+git checkout -b feat/my-feature
+git branch -a
+git checkout main
 ```
 
 ### View history and diffs
 
 ```sh
-/tools/bin/git log --oneline
-/tools/bin/git log --oneline -20
-/tools/bin/git diff
-/tools/bin/git diff --staged
-/tools/bin/git show HEAD
+git log --oneline
+git log --oneline -20
+git diff
+git diff --staged
+git show HEAD
 ```
 
 ### Fetch and rebase
 
 ```sh
-/tools/bin/git fetch origin
-/tools/bin/git rebase origin/main
+git fetch origin
+git rebase origin/main
 ```
 
 ### Stash
 
 ```sh
-/tools/bin/git stash push
-/tools/bin/git stash pop
-/tools/bin/git stash list
+git stash push
+git stash pop
+git stash list
 ```
 
 ## Permission Errors
@@ -106,5 +150,5 @@ Permission denied: force-push is not allowed for this agent.
 
 - Always `git status` before committing to confirm what is staged
 - Use `git diff --staged` to review exactly what will be committed
-- The tool runs in your workspace directory — paths in git output are relative to `/workspace`
-- Each call is stateless — git state (branch, index, stash) persists in `/workspace/.git` between calls
+- Paths in git output are relative to `/workspace`
+- Each call is stateless — git state (branch, index, stash) persists in `/workspace/.git` or `/workspace/<repo>/.git` between calls

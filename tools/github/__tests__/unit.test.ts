@@ -337,3 +337,44 @@ describe("failed execution", () => {
     expect(result.output).toContain("gh exited with code 2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Workspace directory (cwd)
+// ---------------------------------------------------------------------------
+
+describe("workspace directory", () => {
+  it("passes workspaceDir as cwd to executor", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["pr", "create"], { stdout: "https://github.com/myorg/myrepo/pull/1", exitCode: 0 });
+
+    const handler = createHandler({}, { executor: fake.run });
+    const sessionContext = {
+      workspaceDir: "/home/user/.beige/agents/coder/workspace",
+    };
+
+    const result = await handler(["pr", "create"], undefined, sessionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(fake.cwds[0]).toBe("/home/user/.beige/agents/coder/workspace");
+  });
+
+  it("falls back to process.cwd() when sessionContext is absent", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["repo", "list"], { stdout: "myorg/myrepo", exitCode: 0 });
+
+    const handler = createHandler({}, { executor: fake.run });
+    await handler(["repo", "list"]);
+
+    expect(fake.cwds[0]).toBe(process.cwd());
+  });
+
+  it("falls back to process.cwd() when workspaceDir is not set", async () => {
+    const fake = createFakeGhClient();
+    fake.register(["repo", "list"], { stdout: "myorg/myrepo", exitCode: 0 });
+
+    const handler = createHandler({}, { executor: fake.run });
+    await handler(["repo", "list"], undefined, { agentName: "test" });
+
+    expect(fake.cwds[0]).toBe(process.cwd());
+  });
+});

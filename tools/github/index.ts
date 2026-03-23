@@ -1,16 +1,35 @@
 import { spawn } from "child_process";
 
-// ToolHandler type is defined inline so this file is self-contained.
-// It can be installed anywhere (e.g. ~/.beige/tools/github/) without needing
-// the beige source tree.
+// ---------------------------------------------------------------------------
+// Types — self-contained, no beige source imports needed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Session context injected by the beige gateway.
+ *
+ * The gateway provides the actual host paths — the sandboxed agent only knows
+ * about /workspace inside its container. This context allows the tool to
+ * run gh from the correct directory on the gateway host.
+ */
+interface SessionContext {
+  sessionKey?: string;
+  channel?: string;
+  agentName?: string;
+  agentDir?: string;
+  /** Absolute path on the gateway host to the agent's workspace. */
+  workspaceDir?: string;
+}
+
 type ToolHandler = (
   args: string[],
-  config?: Record<string, unknown>
+  config?: Record<string, unknown>,
+  sessionContext?: SessionContext
 ) => Promise<{ output: string; exitCode: number }>;
 
 export type GhExecutor = (
   args: string[],
-  token?: string
+  token: string | undefined,
+  cwd: string
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
 /**
@@ -86,8 +105,13 @@ function resolveAllowedCommands(config: Record<string, unknown>): Set<string> {
  *
  * When no token is provided the process environment is inherited as-is, so
  * existing gh auth (via `gh auth login`) continues to work.
+ *
+ * The cwd parameter sets the working directory for the gh subprocess. This is
+ * critical for commands like `pr create` that read .git/config to discover the
+ * repository. The cwd should be the agent's workspace directory on the gateway
+ * host (sessionContext.workspaceDir).
  */
-export const defaultGhExecutor: GhExecutor = (args, token) =>
+export const defaultGhExecutor: GhExecutor = (args, token, cwd) =>
   new Promise((resolve) => {
     const env = token
       ? { ...process.env, GH_TOKEN: token }
@@ -95,6 +119,7 @@ export const defaultGhExecutor: GhExecutor = (args, token) =>
 
     const proc = spawn("gh", args, {
       env,
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -148,7 +173,17 @@ export function createHandler(
     ? config.token.trim()
     : undefined;
 
-  return async (args: string[]) => {
+  return async (
+    args: string[],
+    _toolConfig?: Record<string, unknown>,
+    sessionContext?: SessionContext
+  ) => {
+    // Resolve working directory — the workspace on the gateway host.
+    // This is critical for commands like `pr create` that read .git/config
+    // to discover the repository. Falls back to process.cwd() when not in
+    // a session (e.g., tests).
+    const cwd = sessionContext?.workspaceDir ?? process.cwd();
+
     if (args.length === 0) {
       return {
         output: [
@@ -184,7 +219,7 @@ export function createHandler(
       };
     }
 
-    const result = await executor([subcommand, ...rest], token);
+    const result = await executor([subcommand, ...rest], token, cwd);
 
     // On success return stdout. On failure include both streams so the agent
     // can diagnose the problem.
