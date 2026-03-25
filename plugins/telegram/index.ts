@@ -509,7 +509,11 @@ export function createPlugin(
     },
 
     async stop(): Promise<void> {
-      await bot.stop();
+      // Add timeout to prevent hanging on graceful shutdown (GrammY can be slow)
+      await Promise.race([
+        bot.stop(),
+        new Promise<void>((resolve) => setTimeout(() => resolve(), 1000)),
+      ]);
       ctx.log.info("Bot stopped");
     },
   };
