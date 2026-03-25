@@ -3,7 +3,6 @@ import { resolve } from "path";
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 
 const TOOLKIT_ROOT = resolve(import.meta.dirname, "..");
-const TOOLS_DIR = resolve(TOOLKIT_ROOT, "tools");
 const PLUGINS_DIR = resolve(TOOLKIT_ROOT, "plugins");
 
 interface PluginManifest {
@@ -17,23 +16,10 @@ interface PluginManifest {
 function discoverPluginDirs(): Array<{ path: string; name: string }> {
   const dirs: Array<{ path: string; name: string }> = [];
 
-  // Scan tools/ directory
-  if (existsSync(TOOLS_DIR)) {
-    for (const entry of readdirSync(TOOLS_DIR)) {
-      const p = resolve(TOOLS_DIR, entry);
-      if (statSync(p).isDirectory() && existsSync(resolve(p, "plugin.json"))) {
-        dirs.push({ path: p, name: entry });
-      }
-    }
-  }
-
-  // Scan plugins/ directory
-  if (existsSync(PLUGINS_DIR)) {
-    for (const entry of readdirSync(PLUGINS_DIR)) {
-      const p = resolve(PLUGINS_DIR, entry);
-      if (statSync(p).isDirectory() && existsSync(resolve(p, "plugin.json"))) {
-        dirs.push({ path: p, name: entry });
-      }
+  for (const entry of readdirSync(PLUGINS_DIR)) {
+    const p = resolve(PLUGINS_DIR, entry);
+    if (statSync(p).isDirectory() && existsSync(resolve(p, "plugin.json"))) {
+      dirs.push({ path: p, name: entry });
     }
   }
 
@@ -75,11 +61,10 @@ describe("plugin discovery", () => {
         expect(typeof mod.createPlugin).toBe("function");
       });
 
-      it("exports createHandler for backward compat", async () => {
+      it("exports createHandler for backward compat (if not a pure plugin)", async () => {
         const mod = await import(resolve(pluginDir, "index.ts"));
-        // createHandler is optional for pure-plugin tools (like telegram)
-        // but expected for tools migrated from the old format
-        if (existsSync(resolve(pluginDir, "../../tools", pluginName))) {
+        // createHandler is optional for pure-plugin implementations (like telegram)
+        if (mod.createHandler) {
           expect(typeof mod.createHandler).toBe("function");
         }
       });

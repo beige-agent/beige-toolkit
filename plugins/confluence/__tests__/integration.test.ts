@@ -16,7 +16,7 @@ import { createHandler, type Executor } from "../index.js";
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/confluence");
+  const manifest = loadToolManifest("plugins/confluence");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

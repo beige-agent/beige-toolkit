@@ -17,7 +17,7 @@ import { createHandler, type SessionStoreLike, type SessionEntryLike, type Sessi
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/sessions");
+  const manifest = loadToolManifest("plugins/sessions");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

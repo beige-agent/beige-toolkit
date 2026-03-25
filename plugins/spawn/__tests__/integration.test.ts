@@ -22,7 +22,7 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/spawn");
+  const manifest = loadToolManifest("plugins/spawn");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

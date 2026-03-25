@@ -26,11 +26,11 @@ describe("install smoke", () => {
       recursive: true,
       filter: (src) => !src.includes("node_modules") && !src.includes(".git"),
     });
-    expect(existsSync(resolve(tmpPath, "tools"))).toBe(true);
+    expect(existsSync(resolve(tmpPath, "plugins"))).toBe(true);
   });
 
   it("all plugins are discoverable from the install path", () => {
-    const dirs = [resolve(tmpPath, "tools"), resolve(tmpPath, "plugins")];
+    const dirs = [resolve(tmpPath, "plugins")];
     let found = 0;
 
     for (const dir of dirs) {
@@ -53,22 +53,18 @@ describe("install smoke", () => {
   });
 
   it("all plugin entry points are importable from the install path", async () => {
-    const dirs = [resolve(tmpPath, "tools"), resolve(tmpPath, "plugins")];
+    const pluginsDir = resolve(tmpPath, "plugins");
+    const pluginDirs = readdirSync(pluginsDir)
+      .map((e) => resolve(pluginsDir, e))
+      .filter((p) => statSync(p).isDirectory())
+      .filter((p) => existsSync(resolve(p, "plugin.json")));
 
-    for (const dir of dirs) {
-      if (!existsSync(dir)) continue;
-      const pluginDirs = readdirSync(dir)
-        .map((e) => resolve(dir, e))
-        .filter((p) => statSync(p).isDirectory())
-        .filter((p) => existsSync(resolve(p, "plugin.json")));
+    for (const pluginDir of pluginDirs) {
+      const handlerPath = resolve(pluginDir, "index.ts");
+      expect(existsSync(handlerPath)).toBe(true);
 
-      for (const pluginDir of pluginDirs) {
-        const handlerPath = resolve(pluginDir, "index.ts");
-        expect(existsSync(handlerPath)).toBe(true);
-
-        const mod = await import(handlerPath);
-        expect(typeof mod.createPlugin).toBe("function");
-      }
+      const mod = await import(handlerPath);
+      expect(typeof mod.createPlugin).toBe("function");
     }
   });
 });

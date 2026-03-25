@@ -20,7 +20,7 @@ import type { McpToolCallResult, McpTool } from "../mcp-client.js";
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/chrome");
+  const manifest = loadToolManifest("plugins/chrome");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

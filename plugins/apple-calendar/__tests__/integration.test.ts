@@ -19,7 +19,7 @@ import { createHandler, type Executor } from "../index.js";
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/apple-calendar");
+  const manifest = loadToolManifest("plugins/apple-calendar");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

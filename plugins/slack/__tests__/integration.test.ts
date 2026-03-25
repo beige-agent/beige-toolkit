@@ -15,7 +15,7 @@ import { createHandler, type Executor } from "../index.js";
 // ---------------------------------------------------------------------------
 
 describe("tool manifest", () => {
-  const manifest = loadToolManifest("tools/slack");
+  const manifest = loadToolManifest("plugins/slack");
 
   it("is valid", () => {
     assertValidToolManifest(manifest);

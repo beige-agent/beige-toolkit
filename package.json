@@ -7,19 +7,14 @@
   },
   "type": "module",
   "files": [
-    "tools/*/plugin.json",
-    "tools/*/package.json",
-    "tools/*/*.ts",
-    "tools/*/README.md",
-    "tools/*/SKILL.md",
-    "tools/*/skills/**",
-    "tools/apple-calendar/calendar-cli.swift",
-    "tools/apple-calendar/calendar-cli",
     "plugins/*/plugin.json",
     "plugins/*/package.json",
     "plugins/*/*.ts",
     "plugins/*/README.md",
-    "plugins/*/SKILL.md"
+    "plugins/*/SKILL.md",
+    "plugins/*/skills/**",
+    "plugins/apple-calendar/calendar-cli.swift",
+    "plugins/apple-calendar/calendar-cli"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
