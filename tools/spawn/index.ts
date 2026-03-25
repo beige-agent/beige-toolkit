@@ -582,3 +582,58 @@ export function createHandler(
     };
   };
 }
+
+// ── Plugin adapter ───────────────────────────────────────────────────────────
+
+import type {
+  PluginInstance,
+  PluginContext,
+  PluginRegistrar,
+} from "@matthias-hausberger/beige";
+import { readFileSync as readFileSyncPlugin } from "fs";
+import { join as joinPath } from "path";
+
+export function createPlugin(
+  config: Record<string, unknown>,
+  ctx: PluginContext
+): PluginInstance {
+  const manifestPath = joinPath(import.meta.dirname!, "plugin.json");
+  const manifest = JSON.parse(readFileSyncPlugin(manifestPath, "utf-8"));
+
+  // Bridge PluginContext to the interfaces the handler expects
+  const agentManagerBridge: AgentManagerLike = {
+    prompt(sessionKey, agentName, message) {
+      return ctx.prompt(sessionKey, agentName, message);
+    },
+  };
+
+  const sessionStoreBridge: SessionStoreLike = {
+    getEntry(key) {
+      return ctx.getSessionEntry(key) as SessionEntryLike | undefined;
+    },
+    createSession(key, agentName, metadata) {
+      return ctx.createSession(key, agentName, metadata);
+    },
+  };
+
+  const beigeConfigBridge: BeigeConfigLike = {
+    agents: Object.fromEntries(ctx.agentNames.map((n) => [n, {}])),
+  };
+
+  const handler = createHandler(config as SpawnConfig, {
+    agentManagerRef: { current: agentManagerBridge },
+    sessionStore: sessionStoreBridge,
+    beigeConfig: beigeConfigBridge,
+  });
+
+  return {
+    register(reg: PluginRegistrar): void {
+      reg.tool({
+        name: manifest.name,
+        description: manifest.description,
+        commands: manifest.commands,
+        handler,
+      });
+    },
+  };
+}

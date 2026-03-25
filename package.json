@@ -7,14 +7,19 @@
   },
   "type": "module",
   "files": [
-    "tools/*/tool.json",
+    "tools/*/plugin.json",
     "tools/*/package.json",
     "tools/*/*.ts",
     "tools/*/README.md",
     "tools/*/SKILL.md",
     "tools/*/skills/**",
     "tools/apple-calendar/calendar-cli.swift",
-    "tools/apple-calendar/calendar-cli"
+    "tools/apple-calendar/calendar-cli",
+    "plugins/*/plugin.json",
+    "plugins/*/package.json",
+    "plugins/*/*.ts",
+    "plugins/*/README.md",
+    "plugins/*/SKILL.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -22,7 +27,11 @@
     "test:watch": "vitest",
     "smoke": "bash scripts/smoke.sh"
   },
+  "dependencies": {
+    "grammy": "^1.35.0"
+  },
   "devDependencies": {
+    "@matthias-hausberger/beige": "file:../beige",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"

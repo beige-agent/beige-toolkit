@@ -734,3 +734,44 @@ export function createHandler(
     }
   };
 }
+
+// ── Plugin adapter ───────────────────────────────────────────────────────────
+
+import type {
+  PluginInstance,
+  PluginContext,
+  PluginRegistrar,
+} from "@matthias-hausberger/beige";
+import { readFileSync as readFileSyncPlugin } from "fs";
+import { join as joinPath } from "path";
+
+export function createPlugin(
+  config: Record<string, unknown>,
+  ctx: PluginContext
+): PluginInstance {
+  const manifestPath = joinPath(import.meta.dirname!, "plugin.json");
+  const manifest = JSON.parse(readFileSyncPlugin(manifestPath, "utf-8"));
+
+  // Bridge PluginContext to the SessionStoreLike interface the handler expects
+  const sessionStoreBridge: SessionStoreLike = {
+    getEntry(key: string) {
+      return ctx.getSessionEntry(key) as SessionEntryLike | undefined;
+    },
+    listSessions(agentName: string, opts?: { includeToolSessions?: boolean }) {
+      return ctx.listSessions(agentName, opts) as SessionInfoLike[];
+    },
+  };
+
+  const handler = createHandler(config, { sessionStore: sessionStoreBridge });
+
+  return {
+    register(reg: PluginRegistrar): void {
+      reg.tool({
+        name: manifest.name,
+        description: manifest.description,
+        commands: manifest.commands,
+        handler,
+      });
+    },
+  };
+}

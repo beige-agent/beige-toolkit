@@ -25,9 +25,6 @@ describe("tool manifest", () => {
     expect(manifest.name).toBe("slack");
   });
 
-  it("target is gateway", () => {
-    expect(manifest.target).toBe("gateway");
-  });
 
   it("lists at least one command example", () => {
     expect(manifest.commands?.length).toBeGreaterThan(0);

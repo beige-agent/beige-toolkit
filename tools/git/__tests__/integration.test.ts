@@ -39,7 +39,7 @@ const SESSION = {
 // Manifest
 // ---------------------------------------------------------------------------
 
-describe("tool.json", () => {
+describe("plugin.json", () => {
   it("is valid and complete", () => {
     const manifest = loadToolManifest(TOOL_DIR);
     assertValidToolManifest(manifest);
@@ -50,9 +50,9 @@ describe("tool.json", () => {
     expect(manifest.name).toBe("git");
   });
 
-  it("targets the gateway", () => {
+  it("provides the git tool", () => {
     const manifest = loadToolManifest(TOOL_DIR);
-    expect(manifest.target).toBe("gateway");
+    expect(manifest.provides).toEqual({ tools: ["git"] });
   });
 
   it("has at least one documented command", () => {

@@ -11,7 +11,7 @@ const TOOL_DIR = resolve(import.meta.dirname, "..");
 // Manifest
 // ---------------------------------------------------------------------------
 
-describe("tool.json", () => {
+describe("plugin.json", () => {
   it("is valid and complete", () => {
     const manifest = loadToolManifest(TOOL_DIR);
     assertValidToolManifest(manifest);
@@ -22,9 +22,9 @@ describe("tool.json", () => {
     expect(manifest.name).toBe("github");
   });
 
-  it("targets the gateway", () => {
+  it("provides the github tool", () => {
     const manifest = loadToolManifest(TOOL_DIR);
-    expect(manifest.target).toBe("gateway");
+    expect(manifest.provides).toEqual({ tools: ["github"] });
   });
 
   it("has at least one documented command", () => {

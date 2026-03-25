@@ -237,3 +237,34 @@ export function createHandler(
     };
   };
 }
+
+// ── Plugin adapter ───────────────────────────────────────────────────────────
+// Wraps the legacy createHandler as a plugin for the v2 plugin system.
+
+import type {
+  PluginInstance,
+  PluginContext,
+  PluginRegistrar,
+} from "@matthias-hausberger/beige";
+import { readFileSync } from "fs";
+import { join as joinPath } from "path";
+
+export function createPlugin(
+  config: Record<string, unknown>,
+  _ctx: PluginContext
+): PluginInstance {
+  const manifestPath = joinPath(import.meta.dirname!, "plugin.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  const handler = createHandler(config);
+
+  return {
+    register(reg: PluginRegistrar): void {
+      reg.tool({
+        name: manifest.name,
+        description: manifest.description,
+        commands: manifest.commands,
+        handler,
+      });
+    },
+  };
+}
