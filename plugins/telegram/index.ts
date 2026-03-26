@@ -39,7 +39,7 @@ type TelegramReactionEmoji = "👀" | "🎉" | "😢";
 interface TelegramPluginConfig {
   token: string;
   allowedUsers: (number | string)[]; // strings from env vars are coerced to numbers
-  agentMapping: { default: string };
+  agentMapping: { default: string; [userId: number]: string };
   defaults?: {
     verbose?: boolean;
     streaming?: boolean;
@@ -97,8 +97,15 @@ export function createPlugin(
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  function resolveAgent(_userId: number): string {
-    return cfg.agentMapping.default;
+  function resolveAgent(userId: number, sessionKey?: string): string {
+    // Session-level agent override takes precedence over the default mapping
+    if (sessionKey) {
+      const meta = ctx.getSessionMetadata(sessionKey, "telegram_settings") as
+        | Record<string, unknown>
+        | undefined;
+      if (typeof meta?.agent === "string") return meta.agent;
+    }
+    return cfg.agentMapping[userId] ?? cfg.agentMapping.default;
   }
 
   function getVerbose(sessionKey: string): boolean {
@@ -224,6 +231,8 @@ export function createPlugin(
 
             try {
               // For intermediate streaming updates we always edit/send a single message.
+              // Sent as plain text (no parse_mode) — converting incomplete Markdown
+              // mid-stream would produce broken HTML. The final message is converted.
               // If the live text exceeds 4096 chars, show the most recent 4096 (a
               // tail-window) so the user sees the latest output as it streams in.
               const preview = currentMessage.length <= 4096
@@ -248,8 +257,8 @@ export function createPlugin(
             channel: "telegram",
             onAutoCompactionStart: () => {
               bot.api
-                .sendMessage(chatId, "🗜️ _Auto-compacting context…_", {
-                  parse_mode: "Markdown",
+                .sendMessage(chatId, "🗜️ Auto\\-compacting context…", {
+                  parse_mode: "MarkdownV2",
                   ...(threadId ? { message_thread_id: threadId } : {}),
                 })
                 .catch(() => {});
@@ -283,21 +292,27 @@ export function createPlugin(
           }
         );
 
-        // Final step: send the complete response, split across multiple messages if needed.
+        // Final step: send the complete response formatted as MarkdownV2, split if needed.
         // If a partial streaming message already exists, edit it with the first chunk
+        // (switching from plain-text preview to formatted MarkdownV2 final answer),
         // then send any remaining chunks as new messages.
-        const finalChunks = splitMessage(response || "(empty response)", 4096);
+        const finalV2 = markdownToTelegramV2(response || "(empty response)");
+        const finalChunks = splitMessage(finalV2, 4096);
         if (sentMessageId !== null) {
           try {
-            await bot.api.editMessageText(chatId, sentMessageId, finalChunks[0]);
+            await bot.api.editMessageText(chatId, sentMessageId, finalChunks[0], {
+              parse_mode: "MarkdownV2",
+            });
           } catch {
             // Edit failed (e.g. content unchanged or message deleted) — send as new message
             await bot.api.sendMessage(chatId, finalChunks[0], {
+              parse_mode: "MarkdownV2",
               ...(threadId ? { message_thread_id: threadId } : {}),
             });
           }
           for (const chunk of finalChunks.slice(1)) {
             await bot.api.sendMessage(chatId, chunk, {
+              parse_mode: "MarkdownV2",
               ...(threadId ? { message_thread_id: threadId } : {}),
             });
           }
@@ -311,8 +326,8 @@ export function createPlugin(
           channel: "telegram",
           onAutoCompactionStart: () => {
             bot.api
-              .sendMessage(chatId, "🗜️ _Auto-compacting context…_", {
-                parse_mode: "Markdown",
+              .sendMessage(chatId, "🗜️ Auto\\-compacting context…", {
+                parse_mode: "MarkdownV2",
                 ...(threadId ? { message_thread_id: threadId } : {}),
               })
               .catch(() => {});
@@ -365,9 +380,11 @@ export function createPlugin(
     threadId: number | undefined,
     text: string
   ): Promise<void> {
-    const chunks = splitMessage(text || "(empty response)", 4096);
+    const v2 = markdownToTelegramV2(text || "(empty response)");
+    const chunks = splitMessage(v2, 4096);
     for (const chunk of chunks) {
       await bot.api.sendMessage(chatId, chunk, {
+        parse_mode: "MarkdownV2",
         ...(threadId ? { message_thread_id: threadId } : {}),
       });
     }
@@ -396,21 +413,24 @@ export function createPlugin(
     const streaming = getStreaming(sessionKey);
     await grammyCtx.reply(
       "👋 Hello! I'm your Beige agent. Send me a message and I'll help you out.\n\n" +
-        "Commands:\n" +
+        "<b>Commands</b>\n" +
         "/new — Start a new conversation session\n" +
         "/stop — Abort the current operation immediately\n" +
         "/compact — Summarise and compress conversation history\n" +
         "/status — Show current session info and settings\n" +
+        "/agent &lt;name&gt; — Switch agent (history preserved)\n" +
+        "/model provider/modelId — Switch model (history preserved)\n" +
         "/verbose on|off — Toggle tool-call notifications\n" +
         "/v on|off — Same as /verbose (shorthand)\n" +
         "/streaming on|off — Toggle real-time response streaming\n" +
         "/s on|off — Same as /streaming (shorthand)\n\n" +
-        "Tips:\n" +
+        "<b>Tips</b>\n" +
         "• Send a message while the agent is running to steer it mid-task\n" +
         "• Multiple threads run as independent sessions in parallel\n\n" +
-        `Current settings:\n` +
+        `<b>Current settings</b>\n` +
         `• Verbose: ${verbose ? "🔊 on" : "🔇 off"}\n` +
-        `• Streaming: ${streaming ? "⚡ on" : "📦 off"}`
+        `• Streaming: ${streaming ? "⚡ on" : "📦 off"}`,
+      { parse_mode: "HTML" }
     );
   });
 
@@ -419,7 +439,7 @@ export function createPlugin(
     const chatId = grammyCtx.chat.id;
     const threadId = grammyCtx.message?.message_thread_id;
     const sessionKey = telegramSessionKey(chatId, threadId);
-    const agentName = resolveAgent(grammyCtx.from!.id);
+    const agentName = resolveAgent(grammyCtx.from!.id, sessionKey);
 
     // Clear session-level setting overrides
     ctx.setSessionMetadata(sessionKey, "telegram_settings", {});
@@ -467,7 +487,7 @@ export function createPlugin(
           const nowK = (usage.inputTokens / 1000).toFixed(1);
           const maxK = (modelInfo.contextWindow / 1000).toFixed(0);
           const bar = contextBar(usage.inputTokens, modelInfo.contextWindow);
-          contextLine = `\n\n*Context now:* ${bar} ${nowK}k / ${maxK}k (${pct}%)`;
+          contextLine = `\n\n<b>Context now:</b> ${bar} ${nowK}k / ${maxK}k (${pct}%)`;
         }
       }
 
@@ -475,8 +495,8 @@ export function createPlugin(
       await grammyCtx.api.editMessageText(
         chatId,
         progressMsg.message_id,
-        `✅ *Compacted!* Previous context: ~${beforeK}k tokens.${contextLine}`,
-        { parse_mode: "Markdown" }
+        `✅ <b>Compacted!</b> Previous context: ~${beforeK}k tokens.${contextLine}`,
+        { parse_mode: "HTML" }
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -493,7 +513,7 @@ export function createPlugin(
     const chatId = grammyCtx.chat.id;
     const threadId = grammyCtx.message?.message_thread_id;
     const sessionKey = telegramSessionKey(chatId, threadId);
-    const agentName = resolveAgent(grammyCtx.from!.id);
+    const agentName = resolveAgent(grammyCtx.from!.id, sessionKey);
     const verbose = getVerbose(sessionKey);
     const streaming = getStreaming(sessionKey);
 
@@ -503,14 +523,14 @@ export function createPlugin(
     const modelRef = ctx.getSessionModel(sessionKey);
     const usage = ctx.getSessionUsage(sessionKey);
 
-    let modelLine = "_(no session yet)_";
-    let contextLine = "_(no data yet)_";
+    let modelLine = "<i>(no session yet)</i>";
+    let contextLine = "<i>(no data yet)</i>";
 
     if (modelRef) {
       const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
       modelLine = modelInfo
-        ? `\`${modelInfo.name}\``
-        : `\`${modelRef.provider}/${modelRef.modelId}\``;
+        ? `<code>${escapeHtml(modelInfo.name)}</code>`
+        : `<code>${escapeHtml(`${modelRef.provider}/${modelRef.modelId}`)}</code>`;
 
       if (usage && modelInfo) {
         const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
@@ -525,17 +545,158 @@ export function createPlugin(
     }
 
     await grammyCtx.reply(
-      `*Session Status*\n\n` +
-        `Agent: \`${agentName}\`\n` +
-        `Chat: \`${chatId}${threadId ? ` / Thread: ${threadId}` : ""}\`\n` +
+      `<b>Session Status</b>\n\n` +
+        `Agent: <code>${escapeHtml(agentName)}</code>\n` +
+        `Chat: <code>${chatId}${threadId ? ` / Thread: ${threadId}` : ""}</code>\n` +
         `Model: ${modelLine}\n\n` +
-        `*Context*\n` +
+        `<b>Context</b>\n` +
         `${contextLine}\n\n` +
-        `*Settings*\n` +
+        `<b>Settings</b>\n` +
         `• Verbose: ${verbose ? "🔊 on" : "🔇 off"}\n` +
         `• Streaming: ${streaming ? "⚡ on" : "📦 off"}`,
-      { parse_mode: "Markdown" }
+      { parse_mode: "HTML" }
     );
+  });
+
+  // /agent command — switch the agent for the current session (preserves history)
+  bot.command("agent", async (grammyCtx) => {
+    const chatId = grammyCtx.chat.id;
+    const threadId = grammyCtx.message?.message_thread_id;
+    const sessionKey = telegramSessionKey(chatId, threadId);
+
+    const parts = (grammyCtx.message?.text ?? "").trim().split(/\s+/);
+    const newAgent = parts[1];
+
+    // No argument — list available agents
+    if (!newAgent) {
+      const current = resolveAgent(grammyCtx.from!.id, sessionKey);
+      const available = ctx.agentNames.map((n) =>
+        n === current ? `• <b>${escapeHtml(n)}</b> ← current` : `• ${escapeHtml(n)}`
+      ).join("\n");
+      await grammyCtx.reply(
+        `<b>Available agents</b>\n\n${available}\n\nUsage: /agent &lt;name&gt;`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    if (!ctx.agentNames.includes(newAgent)) {
+      const list = ctx.agentNames.map((n) => `• ${escapeHtml(n)}`).join("\n");
+      await grammyCtx.reply(
+        `❌ Unknown agent: <code>${escapeHtml(newAgent)}</code>\n\nAvailable:\n${list}`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    const prevAgent = resolveAgent(grammyCtx.from!.id, sessionKey);
+    if (newAgent === prevAgent) {
+      await grammyCtx.reply(
+        `Already using agent <code>${escapeHtml(newAgent)}</code>.`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    // Persist the override in session metadata and dispose the in-memory pi session.
+    // The next prompt will recreate it under the new agent's config,
+    // loading the same .jsonl file so conversation history is preserved.
+    const meta =
+      (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
+    meta.agent = newAgent;
+    ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
+    await ctx.switchSessionAgent(sessionKey, newAgent);
+
+    await grammyCtx.reply(
+      `✅ Switched to agent <code>${escapeHtml(newAgent)}</code>. ` +
+        `Conversation history is preserved. ` +
+        `Tools and system prompt now use the new agent's config.`,
+      { parse_mode: "HTML" }
+    );
+    ctx.log.info(`Agent switched ${prevAgent} → ${newAgent} for session ${sessionKey}`);
+  });
+
+  // /model command — switch the LLM model for the current session (preserves history)
+  bot.command("model", async (grammyCtx) => {
+    const chatId = grammyCtx.chat.id;
+    const threadId = grammyCtx.message?.message_thread_id;
+    const sessionKey = telegramSessionKey(chatId, threadId);
+    const agentName = resolveAgent(grammyCtx.from!.id, sessionKey);
+
+    const parts = (grammyCtx.message?.text ?? "").trim().split(/\s+/);
+    const modelArg = parts[1]; // expected: "provider/modelId"
+
+    // No argument — show current model and allowed models for this agent
+    if (!modelArg) {
+      const currentModel = ctx.getSessionModel(sessionKey);
+      const agentCfg = (ctx.config as any).agents?.[agentName];
+      const primary = agentCfg?.model;
+      const fallbacks: Array<{ provider: string; model: string }> = agentCfg?.fallbackModels ?? [];
+
+      const modelLine = (m: { provider: string; model: string }): string => {
+        const key = `${m.provider}/${m.model}`;
+        const isCurrent =
+          currentModel?.provider === m.provider && currentModel?.modelId === m.model;
+        return isCurrent
+          ? `• <b>${escapeHtml(key)}</b> ← current`
+          : `• ${escapeHtml(key)}`;
+      };
+
+      const lines = [
+        ...(primary ? [modelLine(primary)] : []),
+        ...fallbacks.map(modelLine),
+      ].join("\n") || "<i>(no models configured)</i>";
+
+      await grammyCtx.reply(
+        `<b>Available models for <code>${escapeHtml(agentName)}</code></b>\n\n` +
+          `${lines}\n\nUsage: /model provider/modelId`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+
+    // Parse "provider/modelId"
+    const slashIdx = modelArg.indexOf("/");
+    if (slashIdx === -1) {
+      await grammyCtx.reply(
+        `❌ Expected format: <code>provider/modelId</code>\nExample: <code>anthropic/claude-sonnet-4-5</code>`,
+        { parse_mode: "HTML" }
+      );
+      return;
+    }
+    const provider = modelArg.slice(0, slashIdx);
+    const modelId = modelArg.slice(slashIdx + 1);
+
+    const progressMsg = await grammyCtx.reply("🔄 Switching model…");
+
+    try {
+      await ctx.switchSessionModel(sessionKey, agentName, provider, modelId);
+
+      // Read the new model info for a nice confirmation
+      const modelInfo = ctx.getModel(provider, modelId);
+      const displayName = modelInfo ? escapeHtml(modelInfo.name) : escapeHtml(modelArg);
+      const ctxLine = modelInfo
+        ? ` <i>(${(modelInfo.contextWindow / 1000).toFixed(0)}k context)</i>`
+        : "";
+
+      await grammyCtx.api.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        `✅ Switched to <b>${displayName}</b>${ctxLine}. Conversation history is preserved.`,
+        { parse_mode: "HTML" }
+      );
+      ctx.log.info(`Model switched to ${provider}/${modelId} for session ${sessionKey}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await grammyCtx.api
+        .editMessageText(
+          chatId,
+          progressMsg.message_id,
+          `❌ Failed to switch model: ${escapeHtml(msg)}`,
+          { parse_mode: "HTML" }
+        )
+        .catch(() => grammyCtx.reply(`❌ Failed to switch model: ${escapeHtml(msg)}`, { parse_mode: "HTML" }));
+    }
   });
 
   // /verbose and /v commands
@@ -559,9 +720,9 @@ export function createPlugin(
 
     await grammyCtx.reply(
       enable
-        ? "🔊 Verbose mode *on* — you'll see tool calls as they happen."
-        : "🔇 Verbose mode *off* — tool calls are hidden.",
-      { parse_mode: "Markdown" }
+        ? "🔊 Verbose mode <b>on</b> — you'll see tool calls as they happen."
+        : "🔇 Verbose mode <b>off</b> — tool calls are hidden.",
+      { parse_mode: "HTML" }
     );
     ctx.log.info(`Verbose mode ${enable ? "ON" : "OFF"} for session ${sessionKey}`);
   }
@@ -592,9 +753,9 @@ export function createPlugin(
 
     await grammyCtx.reply(
       enable
-        ? "⚡ Streaming mode *on* — responses will appear in real-time."
-        : "📦 Streaming mode *off* — full response will be sent once complete.",
-      { parse_mode: "Markdown" }
+        ? "⚡ Streaming mode <b>on</b> — responses will appear in real-time."
+        : "📦 Streaming mode <b>off</b> — full response will be sent once complete.",
+      { parse_mode: "HTML" }
     );
     ctx.log.info(`Streaming mode ${enable ? "ON" : "OFF"} for session ${sessionKey}`);
   }
@@ -615,7 +776,7 @@ export function createPlugin(
     const userId = grammyCtx.from.id;
 
     const sessionKey = telegramSessionKey(chatId, threadId);
-    const agentName = resolveAgent(userId);
+    const agentName = resolveAgent(userId, sessionKey);
 
     ctx.log.info(
       `User ${userId} → agent '${agentName}' ` +
@@ -773,6 +934,8 @@ export function createPlugin(
           { command: "stop", description: "Abort the current operation immediately" },
           { command: "compact", description: "Summarise and compress conversation history" },
           { command: "status", description: "Show current session info and settings" },
+          { command: "agent", description: "Switch agent: /agent <name> (history preserved)" },
+          { command: "model", description: "Switch model: /model provider/modelId (history preserved)" },
           { command: "verbose", description: "Toggle tool-call notifications: /verbose on|off" },
           { command: "v", description: "Shorthand for /verbose: /v on|off" },
           { command: "streaming", description: "Toggle real-time streaming: /streaming on|off" },
@@ -803,6 +966,128 @@ export function createPlugin(
 }
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
+
+/**
+ * Escape the three characters that are special in Telegram HTML mode.
+ * Used only for hand-crafted bot command messages (status, compact, etc.).
+ */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Escape all characters that have special meaning in Telegram MarkdownV2 outside entities.
+ * Reference: https://core.telegram.org/bots/api#markdownv2-style
+ */
+function escapeV2(s: string): string {
+  // eslint-disable-next-line no-useless-escape
+  return s.replace(/[_*[\]()~`>#+=|{}.!\-\\]/g, "\\$&");
+}
+
+/**
+ * Escape characters that must be escaped inside MarkdownV2 code spans and blocks.
+ * Inside code, only backtick and backslash need escaping.
+ */
+function escapeV2Code(s: string): string {
+  return s.replace(/[`\\]/g, "\\$&");
+}
+
+/**
+ * Convert LLM Markdown output to Telegram MarkdownV2.
+ *
+ * Why MarkdownV2 instead of HTML:
+ *   HTML requires correct nesting of every tag pair. Any ambiguous or overlapping
+ *   bold/italic from the LLM (e.g. *italic **bold** italic*) produces mismatched
+ *   tags that Telegram rejects, silently dropping the whole message.
+ *   MarkdownV2 is the same syntax the LLM already emits — the converter's only
+ *   real job is to escape special characters in plain text so Telegram doesn't
+ *   misinterpret them as formatting markers.
+ *
+ * Strategy:
+ *  1. Extract fenced code blocks, inline code, and links as opaque placeholders
+ *     (each gets its own escaping rules).
+ *  2. Escape ALL remaining text with MarkdownV2 escaping — safe baseline, any
+ *     un-handled edge case stays as literal text, never a broken entity.
+ *  3. Selectively un-escape the formatting markers we want to restore
+ *     (bold, italic, strikethrough, headings, blockquotes).
+ *  4. Restore placeholders.
+ */
+export function markdownToTelegramV2(text: string): string {
+  const placeholders: string[] = [];
+  const save = (s: string): string => {
+    placeholders.push(s);
+    return `\x00P${placeholders.length - 1}\x00`;
+  };
+
+  // ── Step 1a: extract fenced code blocks ─────────────────────────────────
+  let result = text.replace(
+    /```(\w*)\r?\n?([\s\S]*?)```/g,
+    (_m, lang: string, code: string) => {
+      const safe = escapeV2Code(code.replace(/\n$/, "")); // trim one trailing newline
+      return save(
+        lang.trim() ? `\`\`\`${lang.trim()}\n${safe}\n\`\`\`` : `\`\`\`\n${safe}\n\`\`\``
+      );
+    }
+  );
+
+  // ── Step 1b: extract inline code ────────────────────────────────────────
+  result = result.replace(
+    /`([^`\n]+)`/g,
+    (_m, code: string) => save(`\`${escapeV2Code(code)}\``)
+  );
+
+  // ── Step 1c: extract links (before general escaping to preserve URLs) ───
+  // Inside a MarkdownV2 link URL only ) and \ need escaping.
+  result = result.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_m, linkText: string, url: string) =>
+      save(`[${escapeV2(linkText)}](${url.replace(/[)\\]/g, "\\$&")})`)
+  );
+
+  // ── Step 2: escape ALL remaining text ───────────────────────────────────
+  result = escapeV2(result);
+  // Placeholders contain \x00 which is not a V2 special char → survive escaping.
+
+  // ── Step 3: restore formatting (order: bold before italic) ──────────────
+  //
+  // After escapeV2, original `**bold**` becomes `\*\*bold\*\*` in the string.
+  // We match the escaped form and strip the backslashes to restore the markers.
+  // Any case we miss stays as literal escaped text — never a broken entity.
+
+  // Bold ***text*** (bold+italic, rare but valid)
+  result = result.replace(/\\\*\\\*\\\*(.+?)\\\*\\\*\\\*/g, "***$1***");
+
+  // Bold **text**
+  result = result.replace(/\\\*\\\*(.+?)\\\*\\\*/g, "**$1**");
+
+  // Bold __text__ (LLMs sometimes use this for bold; V2 treats __ as underline,
+  // but bold is the intent so we convert to **)
+  result = result.replace(/\\_\\_(.+?)\\_\\_/g, "**$1**");
+
+  // Italic *text* — don't match if adjacent to a * that was already restored
+  result = result.replace(/(?<!\*)\\\*(?!\*)(.+?)(?<!\*)\\\*(?!\*)/g, "*$1*");
+
+  // Italic _text_ — only at word boundaries (avoids snake_case false positives)
+  result = result.replace(/(?<![a-zA-Z0-9])\\_([^_\n]+?)\\_(?![a-zA-Z0-9])/g, "_$1_");
+
+  // Strikethrough: LLM emits ~~text~~; V2 uses ~text~ (single tilde)
+  result = result.replace(/\\~\\~(.+?)\\~\\~/g, "~$1~");
+
+  // Headings → bold (MarkdownV2 has no headings)
+  result = result.replace(/^\\#{1,6} (.+)$/gm, "**$1**");
+
+  // Horizontal rules → separator (after escaping --- becomes \-\-\-)
+  result = result.replace(/^(?:\\-){3,}$|^(?:\\\*){3,}$|^(?:\\_){3,}$/gm, "—————");
+
+  // Blockquotes: `> text` → MarkdownV2 `>text`
+  // After escaping, `>` became `\>`.
+  result = result.replace(/^\\> ?(.+)$/gm, ">$1");
+
+  // ── Step 4: restore placeholders ────────────────────────────────────────
+  result = result.replace(/\x00P(\d+)\x00/g, (_m, i: string) => placeholders[Number(i)]);
+
+  return result;
+}
 
 /**
  * Render a compact ASCII progress bar for context window usage.

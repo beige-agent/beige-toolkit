@@ -54,10 +54,41 @@ Users interact with the bot via these commands:
 | `/stop` | Abort the current operation immediately |
 | `/compact` | Summarise and compress conversation history to free context tokens |
 | `/status` | Show session info: agent, model, context usage, and settings |
+| `/agent` | List available agents |
+| `/agent <name>` | Switch to a different agent — conversation history preserved |
+| `/model` | List available models for the current agent |
+| `/model provider/modelId` | Switch to a different model — conversation history preserved |
 | `/verbose on\|off` | Toggle tool-call notifications |
 | `/v on\|off` | Shorthand for `/verbose` |
 | `/streaming on\|off` | Toggle real-time response streaming |
 | `/s on\|off` | Shorthand for `/streaming` |
+
+## Switching Agent or Model
+
+Both `/agent` and `/model` change the current session **without losing history**:
+
+- The `.jsonl` conversation file is kept on disk untouched
+- Only the in-memory pi session is disposed and recreated
+- The next message picks up from the same history with the new agent/model
+
+**`/agent <name>`**  
+Switches to a different configured agent. The new agent's system prompt, tools, and skills apply from the next message. Useful for routing the same conversation to a specialist agent mid-task.
+
+```
+/agent reviewer    → now handled by the "reviewer" agent
+/agent             → list all available agents
+```
+
+**`/model provider/modelId`**  
+Switches to any model in the current agent's allowed list (primary or fallback). The model must be listed under the agent's `model` or `fallbackModels` config.
+
+```
+/model anthropic/claude-opus-4-5    → switch to Opus
+/model zai/glm-4.7                  → switch to GLM
+/model                              → list available models
+```
+
+Both overrides are stored in session metadata and persist across gateway restarts. `/new` clears them (starting fresh resets to the agent's default).
 
 ## Message Reactions
 
