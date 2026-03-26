@@ -190,19 +190,21 @@ export function createPlugin(
             lastUpdateTime = now;
 
             try {
+              // For intermediate streaming updates we always edit/send a single message.
+              // If the live text exceeds 4096 chars, show the most recent 4096 (a
+              // tail-window) so the user sees the latest output as it streams in.
+              const preview = currentMessage.length <= 4096
+                ? currentMessage
+                : "…" + currentMessage.slice(-(4096 - 1));
               if (sentMessageId === null) {
                 const sent = await bot.api.sendMessage(
                   chatId,
-                  truncateForTelegram(currentMessage),
+                  preview,
                   { ...(threadId ? { message_thread_id: threadId } : {}) }
                 );
                 sentMessageId = sent.message_id;
               } else {
-                await bot.api.editMessageText(
-                  chatId,
-                  sentMessageId,
-                  truncateForTelegram(currentMessage)
-                );
+                await bot.api.editMessageText(chatId, sentMessageId, preview);
               }
             } catch {
               // Ignore edit errors — Telegram rejects edits if content unchanged
@@ -226,17 +228,23 @@ export function createPlugin(
           }
         );
 
-        // Final edit with the complete response
+        // Final step: send the complete response, split across multiple messages if needed.
+        // If a partial streaming message already exists, edit it with the first chunk
+        // then send any remaining chunks as new messages.
+        const finalChunks = splitMessage(response || "(empty response)", 4096);
         if (sentMessageId !== null) {
           try {
-            await bot.api.editMessageText(
-              chatId,
-              sentMessageId,
-              truncateForTelegram(response)
-            );
+            await bot.api.editMessageText(chatId, sentMessageId, finalChunks[0]);
           } catch {
-            // Edit failed (e.g. identical content) — send as new message
-            await sendLongMessageTo(chatId, threadId, response);
+            // Edit failed (e.g. content unchanged or message deleted) — send as new message
+            await bot.api.sendMessage(chatId, finalChunks[0], {
+              ...(threadId ? { message_thread_id: threadId } : {}),
+            });
+          }
+          for (const chunk of finalChunks.slice(1)) {
+            await bot.api.sendMessage(chatId, chunk, {
+              ...(threadId ? { message_thread_id: threadId } : {}),
+            });
           }
         } else {
           await sendLongMessageTo(chatId, threadId, response);
@@ -692,11 +700,6 @@ function formatToolCall(toolName: string, params: Record<string, unknown>): stri
   }
 }
 
-function truncateForTelegram(text: string): string {
-  if (text.length <= 4096) return text;
-  return text.slice(0, 4090) + "\n[…]";
-}
-
 function splitMessage(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text];
 
@@ -723,15 +726,4 @@ function splitMessage(text: string, maxLength: number): string[] {
   return chunks;
 }
 
-async function sendLongMessage(
-  grammyCtx: Context,
-  text: string,
-  threadId?: number
-): Promise<void> {
-  const chunks = splitMessage(text || "(empty response)", 4096);
-  for (const chunk of chunks) {
-    await grammyCtx.reply(chunk, {
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    });
-  }
-}
+
