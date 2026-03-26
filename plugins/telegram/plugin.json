@@ -2,7 +2,7 @@
   "name": "telegram",
   "description": "Telegram channel and messaging tool for Beige agents. Provides a GrammY-based bot that connects Telegram users to agents, plus a tool for agents to send proactive Telegram messages.",
   "commands": [
-    "sendMessage <chatId> <text>              — Send a message to a Telegram chat",
+    "sendMessage <chatId> <text>               — Send a message to a Telegram chat",
     "sendMessage <chatId> --thread <id> <text> — Send to a specific thread/topic"
   ],
   "provides": {

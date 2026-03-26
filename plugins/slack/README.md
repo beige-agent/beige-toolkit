@@ -115,9 +115,9 @@ Access is controlled at the **command path** level. A command path is the leadin
 }
 ```
 
-### Per-Agent Configuration (toolConfigs)
+### Per-Agent Configuration (pluginConfigs)
 
-Use beige's `toolConfigs` to give different agents different Slack permissions:
+Use beige's `pluginConfigs` to give different agents different Slack permissions:
 
 ```json5
 tools: {
@@ -140,7 +140,7 @@ agents: {
   // Notification agent — can send messages
   notifier: {
     tools: ["slack"],
-    toolConfigs: {
+    pluginConfigs: {
       slack: {
         denyCommands: ["messages draft", "auth login", "auth logout", "update"],
         // messages send is no longer denied
@@ -151,7 +151,7 @@ agents: {
   // React bot — can only add reactions
   reactor: {
     tools: ["slack"],
-    toolConfigs: {
+    pluginConfigs: {
       slack: {
         allowCommands: ["messages react"],
       },

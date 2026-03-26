@@ -91,9 +91,9 @@ agents: {
 }
 ```
 
-### Per-Agent Configuration (toolConfigs)
+### Per-Agent Configuration (pluginConfigs)
 
-Since beige supports per-agent `toolConfigs` overrides (deep-merged with the top-level tool config), different agents can have different target lists:
+Since beige supports per-agent `pluginConfigs` overrides (deep-merged with the top-level tool config), different agents can have different target lists:
 
 ```json5
 tools: {
@@ -112,7 +112,7 @@ agents: {
   // coder can additionally spawn reviewer
   coder: {
     tools: ["spawn"],
-    toolConfigs: {
+    pluginConfigs: {
       spawn: {
         targets: {
           reviewer: {},
@@ -124,7 +124,7 @@ agents: {
   // reviewer can additionally spawn coder, with deeper nesting
   reviewer: {
     tools: ["spawn"],
-    toolConfigs: {
+    pluginConfigs: {
       spawn: {
         targets: {
           coder: { maxDepth: 2 },
@@ -140,7 +140,7 @@ agents: {
 },
 ```
 
-> **Note:** `toolConfigs` values are deep-merged with the top-level config. In the example above, coder's effective targets are `{ "SELF": {}, reviewer: {} }` — the baseline `SELF` entry is preserved and `reviewer` is added.
+> **Note:** `pluginConfigs` values are deep-merged with the top-level config. In the example above, coder's effective targets are `{ "SELF": {}, reviewer: {} }` — the baseline `SELF` entry is preserved and `reviewer` is added.
 
 ## Security Model
 
@@ -148,7 +148,7 @@ agents: {
 |---|---|
 | **Default deny** | No spawns permitted unless `targets` is configured. |
 | **Target-level control** | Only explicitly listed targets can be spawned. |
-| **Per-agent overrides** | Use `toolConfigs` to grant different agents different targets. |
+| **Per-agent overrides** | Use `pluginConfigs` to grant different agents different targets. |
 | **SELF keyword** | Enables sub-agent patterns; resolves to caller's own name at runtime. |
 | **Per-target depth cap** | Each target can have its own `maxDepth` to prevent runaway recursion. |
 | **Unknown targets** | Spawns of non-existent agents are rejected immediately. |

@@ -73,7 +73,7 @@ tools: {
 
 ### HTTPS with a Personal Access Token (`https` mode)
 
-Set the token in the gateway process environment — never in `config.json5`:
+Use `${ENV_VAR}` syntax so the token is read from the environment at startup — never hardcoded in `config.json5`:
 
 ```bash
 export BEIGE_GIT_TOKEN="ghp_xxxxxxxxxxxx"
@@ -85,7 +85,8 @@ tools: {
     config: {
       auth: {
         mode: "https",
-        tokenEnv: "BEIGE_GIT_TOKEN",
+        token: "${BEIGE_GIT_TOKEN}",
+        user: "x-access-token",    // optional, this is the default
       },
     },
   },
@@ -109,7 +110,8 @@ The token is injected via a transient `GIT_ASKPASS` helper — no credential sto
 | `auth.mode` | `"ssh"` | `"ssh"` / `"https"` |
 | `auth.sshKeyPath` | `agentDir/ssh/id_ed25519` | Absolute key path. Overrides the per-agent default. |
 | `auth.sshKnownHostsPath` | `agentDir/ssh/known_hosts` | Absolute known_hosts path. Overrides the per-agent default. |
-| `auth.tokenEnv` | `"GIT_TOKEN"` | Env var name for HTTPS PAT. Only used when `mode` is `"https"`. |
+| `auth.token` | — | HTTPS PAT. Use `${ENV_VAR}` syntax for env injection. Only used when `mode` is `"https"`. |
+| `auth.user` | `"x-access-token"` | HTTPS username sent alongside the token. Only used when `mode` is `"https"`. |
 
 ### Default allowed subcommands
 
@@ -157,10 +159,10 @@ agents: {
   writer: {
     tools: ["git"],
   },
-  // Reviewer can only read, not push — override via toolConfigs
+  // Reviewer can only read, not push — override via pluginConfigs
   reader: {
     tools: ["git"],
-    toolConfigs: {
+    pluginConfigs: {
       git: {
         allowedCommands: ["fetch", "pull", "status", "log", "diff", "checkout"],
       },
