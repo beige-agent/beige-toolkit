@@ -317,6 +317,7 @@ export function createPlugin(
         "Commands:\n" +
         "/new — Start a new conversation session\n" +
         "/stop — Abort the current operation immediately\n" +
+        "/compact — Summarise and compress conversation history\n" +
         "/status — Show current session info and settings\n" +
         "/verbose on|off — Toggle tool-call notifications\n" +
         "/v on|off — Same as /verbose (shorthand)\n" +
@@ -359,6 +360,50 @@ export function createPlugin(
     await ctx.abortSession(sessionKey);
     await grammyCtx.reply("⛔ Stopped.");
     ctx.log.info(`Session aborted by user: ${sessionKey}`);
+  });
+
+  // /compact command — manually compact the session context
+  bot.command("compact", async (grammyCtx) => {
+    const chatId = grammyCtx.chat.id;
+    const threadId = grammyCtx.message?.message_thread_id;
+    const sessionKey = telegramSessionKey(chatId, threadId);
+
+    const progressMsg = await grammyCtx.reply("🗜️ Compacting conversation history…");
+
+    try {
+      const { tokensBefore } = await ctx.compactSession(sessionKey);
+
+      // Show post-compaction context so the user sees the result immediately
+      const modelRef = ctx.getSessionModel(sessionKey);
+      const usage = ctx.getSessionUsage(sessionKey);
+
+      let contextLine = "";
+      if (modelRef && usage) {
+        const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
+        if (modelInfo) {
+          const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
+          const nowK = (usage.inputTokens / 1000).toFixed(1);
+          const maxK = (modelInfo.contextWindow / 1000).toFixed(0);
+          const bar = contextBar(usage.inputTokens, modelInfo.contextWindow);
+          contextLine = `\n\n*Context now:* ${bar} ${nowK}k / ${maxK}k (${pct}%)`;
+        }
+      }
+
+      const beforeK = (tokensBefore / 1000).toFixed(1);
+      await grammyCtx.api.editMessageText(
+        chatId,
+        progressMsg.message_id,
+        `✅ *Compacted!* Previous context: ~${beforeK}k tokens.${contextLine}`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await grammyCtx.api
+        .editMessageText(chatId, progressMsg.message_id, `❌ Compaction failed: ${msg}`)
+        .catch(() => grammyCtx.reply(`❌ Compaction failed: ${msg}`));
+    }
+
+    ctx.log.info(`Manual compaction for session ${sessionKey}`);
   });
 
   // /status command
@@ -638,6 +683,7 @@ export function createPlugin(
           { command: "start", description: "Show welcome message and available commands" },
           { command: "new", description: "Start a new conversation session" },
           { command: "stop", description: "Abort the current operation immediately" },
+          { command: "compact", description: "Summarise and compress conversation history" },
           { command: "status", description: "Show current session info and settings" },
           { command: "verbose", description: "Toggle tool-call notifications: /verbose on|off" },
           { command: "v", description: "Shorthand for /verbose: /v on|off" },
