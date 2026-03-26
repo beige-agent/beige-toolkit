@@ -59,6 +59,20 @@ Users interact with the bot via these commands:
 | `/streaming on\|off` | Toggle real-time response streaming |
 | `/s on\|off` | Shorthand for `/streaming` |
 
+## Message Reactions
+
+The bot reacts to every user message to communicate processing state:
+
+| Reaction | Meaning |
+|----------|---------|
+| 👀 | Message received — the agent is processing it |
+| 🎉 | Processing finished — no more tool calls or LLM turns coming |
+| 😢 | Processing failed — an error message follows in the chat |
+
+Reactions are set via the Bot API's `setMessageReaction`. They are silently skipped if the bot lacks reaction permissions in a channel or if the chat type doesn't support them (e.g. some supergroups).
+
+**Steering messages** (sent while the agent is already running) get 👀 but not 🎉 — they don't own the session lifecycle.
+
 ## Concurrency & Steering
 
 The plugin is fully non-blocking: the grammY handler returns immediately and sessions run as background tasks. This means:

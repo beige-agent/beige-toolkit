@@ -28,6 +28,12 @@ import {
   getErrorTag,
 } from "@matthias-hausberger/beige";
 
+// ── Telegram reaction emoji type ─────────────────────────────────────────────
+// Subset of the emoji Telegram accepts as message reactions (as of Bot API 7.x).
+// The full set is enforced by the API at runtime; this type just documents the
+// ones we actually use and prevents passing arbitrary strings.
+type TelegramReactionEmoji = "👀" | "🎉" | "😢";
+
 // ── Config types ─────────────────────────────────────────────────────────────
 
 interface TelegramPluginConfig {
@@ -134,6 +140,29 @@ export function createPlugin(
     };
   }
 
+  // ── Reaction helpers ────────────────────────────────────────────────────
+
+  /**
+   * Set a single emoji reaction on a user's message.
+   * Silently ignores failures (e.g. in channels/supergroups without reactions,
+   * or bots without permission to react).
+   *
+   * Only emoji from Telegram's allowed reaction set are accepted by the API.
+   * We use:
+   *   👀  — received, being processed
+   *   🎉  — finished successfully (no more actions coming)
+   *   😢  — processing failed
+   */
+  function setReaction(
+    chatId: number,
+    messageId: number,
+    emoji: TelegramReactionEmoji
+  ): void {
+    bot.api
+      .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+      .catch(() => {});
+  }
+
   // ── Concurrency tracking ────────────────────────────────────────────────
   //
   // Tracks sessions that are about to start but whose inflightCount hasn't
@@ -149,12 +178,16 @@ export function createPlugin(
   //
   // Called fire-and-forget from the message handler so grammY is never blocked.
   // Uses bot.api directly since grammyCtx is not available after the handler returns.
+  //
+  // userMessageId: the message_id of the user's message that triggered this session.
+  // On success we replace the 👀 reaction with 🎉; on error with 😢.
   async function runSession(
     chatId: number,
     threadId: number | undefined,
     sessionKey: string,
     agentName: string,
-    text: string
+    text: string,
+    userMessageId: number
   ): Promise<void> {
     const streaming = getStreaming(sessionKey);
     const verbose = getVerbose(sessionKey);
@@ -300,9 +333,15 @@ export function createPlugin(
         });
         await sendLongMessageTo(chatId, threadId, response);
       }
+
+      // 🎉 = "LLM finished, no more actions coming"
+      setReaction(chatId, userMessageId, "🎉");
     } catch (err) {
       const errorTag = getErrorTag(err);
       ctx.log.error(`[${errorTag}] Session error [${sessionKey}]: ${err}`);
+
+      // 😢 = "processing failed"
+      setReaction(chatId, userMessageId, "😢");
 
       let errorMessage: string;
       if (isAllModelsExhausted(err)) {
@@ -572,6 +611,7 @@ export function createPlugin(
     const text = grammyCtx.message.text;
     const chatId = grammyCtx.chat.id;
     const threadId = grammyCtx.message?.message_thread_id;
+    const messageId = grammyCtx.message.message_id;
     const userId = grammyCtx.from.id;
 
     const sessionKey = telegramSessionKey(chatId, threadId);
@@ -583,7 +623,11 @@ export function createPlugin(
         `${text.slice(0, 80)}${text.length > 80 ? "..." : ""}`
     );
 
-    // If a session is already running, steer it with the new message
+    // 👀 = "received, being processed" — set immediately on every user message
+    setReaction(chatId, messageId, "👀");
+
+    // If a session is already running, steer it with the new message.
+    // Steering messages don't own the session lifecycle so they don't get ✅/❌.
     if (isActive(sessionKey)) {
       ctx.log.info(`Steering active session: ${sessionKey}`);
       await ctx.steerSession(sessionKey, text);
@@ -594,10 +638,11 @@ export function createPlugin(
     // message sees this session as active even before inflightCount is set.
     pendingSessions.add(sessionKey);
 
-    // Give immediate typing feedback, then fire-and-forget the session
+    // Give immediate typing feedback, then fire-and-forget the session.
+    // runSession owns the 👀→✅/❌ lifecycle for this message.
     await grammyCtx.replyWithChatAction("typing").catch(() => {});
 
-    runSession(chatId, threadId, sessionKey, agentName, text)
+    runSession(chatId, threadId, sessionKey, agentName, text, messageId)
       .catch((err) => ctx.log.error(`Unhandled session error [${sessionKey}]: ${err}`))
       .finally(() => pendingSessions.delete(sessionKey));
   });
