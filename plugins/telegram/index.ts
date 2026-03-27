@@ -122,6 +122,17 @@ export function createPlugin(
     return resolveSettingBool(meta, "streaming", cfg.defaults?.streaming, true);
   }
 
+  function getModelOverride(sessionKey: string): { provider: string; model: string } | undefined {
+    const meta = ctx.getSessionMetadata(sessionKey, "telegram_settings") as
+      | Record<string, unknown>
+      | undefined;
+    const v = meta?.modelOverride;
+    if (v && typeof (v as any).provider === "string" && typeof (v as any).model === "string") {
+      return v as { provider: string; model: string };
+    }
+    return undefined;
+  }
+
   function setSetting(sessionKey: string, key: string, value: boolean): void {
     const meta =
       (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
@@ -199,6 +210,7 @@ export function createPlugin(
     const streaming = getStreaming(sessionKey);
     const verbose = getVerbose(sessionKey);
     const onToolStart = verbose ? makeToolStartHandler(chatId, threadId) : undefined;
+    const modelOverride = getModelOverride(sessionKey);
 
     try {
       // Typing indicator — immediate feedback
@@ -255,6 +267,7 @@ export function createPlugin(
           {
             onToolStart,
             channel: "telegram",
+            modelOverride,
             onAutoCompactionStart: () => {
               bot.api
                 .sendMessage(chatId, "🗜️ Auto\\-compacting context…", {
@@ -324,6 +337,7 @@ export function createPlugin(
         const response = await ctx.prompt(sessionKey, agentName, text, {
           onToolStart,
           channel: "telegram",
+          modelOverride,
           onAutoCompactionStart: () => {
             bot.api
               .sendMessage(chatId, "🗜️ Auto\\-compacting context…", {
@@ -598,14 +612,16 @@ export function createPlugin(
       return;
     }
 
-    // Persist the override in session metadata and dispose the in-memory pi session.
-    // The next prompt will recreate it under the new agent's config,
-    // loading the same .jsonl file so conversation history is preserved.
+    // Persist the override in session metadata then dispose the in-memory session.
+    // The next prompt() call passes newAgent as agentName, so getOrCreateSession
+    // will recreate the pi session under the new agent's config while loading the
+    // same .jsonl file — conversation history is preserved.
     const meta =
       (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
     meta.agent = newAgent;
     ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
-    await ctx.switchSessionAgent(sessionKey, newAgent);
+    await ctx.abortSession(sessionKey);
+    await ctx.disposeSession(sessionKey);
 
     await grammyCtx.reply(
       `✅ Switched to agent <code>${escapeHtml(newAgent)}</code>. ` +
@@ -667,36 +683,33 @@ export function createPlugin(
     const provider = modelArg.slice(0, slashIdx);
     const modelId = modelArg.slice(slashIdx + 1);
 
-    const progressMsg = await grammyCtx.reply("🔄 Switching model…");
-
-    try {
-      await ctx.switchSessionModel(sessionKey, agentName, provider, modelId);
-
-      // Read the new model info for a nice confirmation
-      const modelInfo = ctx.getModel(provider, modelId);
-      const displayName = modelInfo ? escapeHtml(modelInfo.name) : escapeHtml(modelArg);
-      const ctxLine = modelInfo
-        ? ` <i>(${(modelInfo.contextWindow / 1000).toFixed(0)}k context)</i>`
-        : "";
-
-      await grammyCtx.api.editMessageText(
-        chatId,
-        progressMsg.message_id,
-        `✅ Switched to <b>${displayName}</b>${ctxLine}. Conversation history is preserved.`,
+    // Validate the model exists in the registry before committing
+    const modelInfo = ctx.getModel(provider, modelId);
+    if (!modelInfo) {
+      await grammyCtx.reply(
+        `❌ Unknown model: <code>${escapeHtml(modelArg)}</code>\n` +
+          `Use /model to list the allowed models for this agent.`,
         { parse_mode: "HTML" }
       );
-      ctx.log.info(`Model switched to ${provider}/${modelId} for session ${sessionKey}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await grammyCtx.api
-        .editMessageText(
-          chatId,
-          progressMsg.message_id,
-          `❌ Failed to switch model: ${escapeHtml(msg)}`,
-          { parse_mode: "HTML" }
-        )
-        .catch(() => grammyCtx.reply(`❌ Failed to switch model: ${escapeHtml(msg)}`, { parse_mode: "HTML" }));
+      return;
     }
+
+    // Persist the override in session metadata.
+    // runSession reads it back and passes it as modelOverride to prompt/promptStreaming,
+    // which causes getOrCreateSessionWithModel to recreate the pi session with this
+    // model while loading the same .jsonl file — history is preserved.
+    const meta =
+      (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
+    meta.modelOverride = { provider, model: modelId };
+    ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
+
+    const displayName = escapeHtml(modelInfo.name);
+    const ctxLine = ` <i>(${(modelInfo.contextWindow / 1000).toFixed(0)}k context)</i>`;
+    await grammyCtx.reply(
+      `✅ Switched to <b>${displayName}</b>${ctxLine}. Conversation history is preserved.`,
+      { parse_mode: "HTML" }
+    );
+    ctx.log.info(`Model override set to ${provider}/${modelId} for session ${sessionKey}`);
   });
 
   // /verbose and /v commands
