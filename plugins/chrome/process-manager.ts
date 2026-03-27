@@ -42,7 +42,7 @@
 
 import { spawn } from "child_process";
 import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from "fs";
-import { homedir } from "os";
+import { homedir, platform } from "os";
 import { resolve, join } from "path";
 import { McpClient, type McpClientLike } from "./mcp-client.ts";
 
@@ -432,28 +432,47 @@ export class ProcessManager {
  * | "fallback"   | no / unknown           | true    |
  *
  * Detection for "fallback":
- *   X11 servers — both real and virtual (TigerVNC, TightVNC, Xvfb, etc.) —
- *   create a Unix domain socket at `/tmp/.X11-unix/X<N>` where N is the
- *   display number.  We check for that socket rather than relying solely on
- *   the DISPLAY env var, which may be set but pointing at a server that is no
- *   longer running.
+ *   - macOS / Windows: these platforms always have a GUI session available
+ *     when running interactively, so we default to non-headless (false) unless
+ *     the user has explicitly set a display config (unlikely on these
+ *     platforms).  This avoids Chrome incorrectly opening in headless mode on
+ *     a laptop.
  *
- *   The display to probe is resolved in this order:
+ *   - Linux: X11 servers — both real and virtual (TigerVNC, TightVNC, Xvfb,
+ *     etc.) — create a Unix domain socket at `/tmp/.X11-unix/X<N>` where N
+ *     is the display number.  We check for that socket rather than relying
+ *     solely on the DISPLAY env var, which may be set but pointing at a
+ *     server that is no longer running.
+ *
+ *   On Linux, the display to probe is resolved in this order:
  *     1. The explicit `display` config option (e.g. ":1")
  *     2. The DISPLAY environment variable of the gateway process
  *     3. Nothing found → no display → headless
  *
  * The `_existsFn` parameter is injectable for unit tests so the real
  * filesystem is never touched during testing.
+ * The `_platformFn` parameter is injectable for unit tests to simulate
+ * different operating systems.
  */
 export function resolveHeadless(
   headless: boolean | "fallback",
   display?: string,
-  _existsFn: (p: string) => boolean = existsSync
+  _existsFn: (p: string) => boolean = existsSync,
+  _platformFn: () => string = platform
 ): boolean {
   if (headless !== "fallback") return headless;
 
-  // Determine which display to probe (explicit config wins over env var)
+  const currentPlatform = _platformFn();
+
+  // macOS and Windows always have a GUI session when running interactively.
+  // Default to non-headless unless the user explicitly configured a display
+  // (in which case we fall through to the X11 socket probe below, which will
+  // correctly determine headless on headless Linux CI or similar).
+  if (currentPlatform === "darwin" || currentPlatform === "win32") {
+    return false;
+  }
+
+  // Linux (and other POSIX): determine which display to probe
   const displayValue = display ?? process.env.DISPLAY;
   if (!displayValue) {
     // No display configured or inherited — start headless
@@ -489,7 +508,8 @@ export function resolveHeadless(
 export function buildMcpArgs(
   config: ProcessConfig,
   profileDir: string,
-  _existsFn: (p: string) => boolean = existsSync
+  _existsFn: (p: string) => boolean = existsSync,
+  _platformFn: () => string = platform
 ): string[] {
   const args: string[] = [
     `--user-data-dir=${profileDir}`,
@@ -504,7 +524,7 @@ export function buildMcpArgs(
   if (exe) args.push(`--executablePath=${exe}`);
 
   if (config.slim) args.push("--slim");
-  if (resolveHeadless(config.headless, config.display, _existsFn)) args.push("--headless");
+  if (resolveHeadless(config.headless, config.display, _existsFn, _platformFn)) args.push("--headless");
   if (config.viewport) args.push(`--viewport=${config.viewport}`);
   if (config.proxyServer) args.push(`--proxy-server=${config.proxyServer}`);
   if (config.acceptInsecureCerts) args.push("--accept-insecure-certs");

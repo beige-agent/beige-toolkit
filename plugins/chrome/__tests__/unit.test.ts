@@ -674,8 +674,8 @@ describe("buildMcpArgs — other flags", () => {
   });
 
   it('adds --headless when headless is "fallback" and no display socket exists', () => {
-    // existsFn returns false for X11 socket → no display → headless
-    const args = buildMcpArgs(makeConfig({ headless: "fallback" }), "/p", () => false);
+    // existsFn returns false for X11 socket → no display → headless (Linux)
+    const args = buildMcpArgs(makeConfig({ headless: "fallback" }), "/p", () => false, () => "linux");
     expect(args).toContain("--headless");
   });
 
@@ -685,7 +685,28 @@ describe("buildMcpArgs — other flags", () => {
     const args = buildMcpArgs(
       makeConfig({ headless: "fallback", display: ":1" }),
       "/p",
-      existsFn
+      existsFn,
+      () => "linux"
+    );
+    expect(args).not.toContain("--headless");
+  });
+
+  it('omits --headless on macOS when headless is "fallback"', () => {
+    const args = buildMcpArgs(
+      makeConfig({ headless: "fallback" }),
+      "/p",
+      () => false,
+      () => "darwin"
+    );
+    expect(args).not.toContain("--headless");
+  });
+
+  it('omits --headless on Windows when headless is "fallback"', () => {
+    const args = buildMcpArgs(
+      makeConfig({ headless: "fallback" }),
+      "/p",
+      () => false,
+      () => "win32"
     );
     expect(args).not.toContain("--headless");
   });
@@ -713,14 +734,14 @@ describe("resolveHeadless", () => {
     const origDisplay = process.env.DISPLAY;
     delete process.env.DISPLAY;
     try {
-      expect(resolveHeadless("fallback", undefined, () => false)).toBe(true);
+      expect(resolveHeadless("fallback", undefined, () => false, () => "linux")).toBe(true);
     } finally {
       if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
     }
   });
 
   it('returns true (headless) for "fallback" when display socket does not exist', () => {
-    expect(resolveHeadless("fallback", ":1", () => false)).toBe(true);
+    expect(resolveHeadless("fallback", ":1", () => false, () => "linux")).toBe(true);
   });
 
   it('returns false (use display) for "fallback" when display socket exists', () => {
@@ -731,13 +752,13 @@ describe("resolveHeadless", () => {
 
   it("probes the correct socket path for display :0", () => {
     const probed: string[] = [];
-    resolveHeadless("fallback", ":0", (p) => { probed.push(p); return false; });
+    resolveHeadless("fallback", ":0", (p) => { probed.push(p); return false; }, () => "linux");
     expect(probed).toContain("/tmp/.X11-unix/X0");
   });
 
   it("probes the correct socket path for display :99", () => {
     const probed: string[] = [];
-    resolveHeadless("fallback", ":99", (p) => { probed.push(p); return false; });
+    resolveHeadless("fallback", ":99", (p) => { probed.push(p); return false; }, () => "linux");
     expect(probed).toContain("/tmp/.X11-unix/X99");
   });
 
@@ -752,7 +773,7 @@ describe("resolveHeadless", () => {
   });
 
   it('returns true (headless) for "fallback" with unrecognised display format', () => {
-    expect(resolveHeadless("fallback", "weird-format", () => true)).toBe(true);
+    expect(resolveHeadless("fallback", "weird-format", () => true, () => "linux")).toBe(true);
   });
 
   it('uses DISPLAY env var when display arg is not set', () => {
@@ -773,13 +794,51 @@ describe("resolveHeadless", () => {
     try {
       // … but config says :3, so we should probe X3, not X5
       const probed: string[] = [];
-      resolveHeadless("fallback", ":3", (p) => { probed.push(p); return false; });
+      resolveHeadless("fallback", ":3", (p) => { probed.push(p); return false; }, () => "linux");
       expect(probed).toContain("/tmp/.X11-unix/X3");
       expect(probed).not.toContain("/tmp/.X11-unix/X5");
     } finally {
       if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
       else delete process.env.DISPLAY;
     }
+  });
+
+  it('returns false (non-headless) on macOS even without DISPLAY', () => {
+    const origDisplay = process.env.DISPLAY;
+    delete process.env.DISPLAY;
+    try {
+      expect(resolveHeadless("fallback", undefined, () => false, () => "darwin")).toBe(false);
+    } finally {
+      if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
+    }
+  });
+
+  it('returns false (non-headless) on Windows even without DISPLAY', () => {
+    const origDisplay = process.env.DISPLAY;
+    delete process.env.DISPLAY;
+    try {
+      expect(resolveHeadless("fallback", undefined, () => false, () => "win32")).toBe(false);
+    } finally {
+      if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
+    }
+  });
+
+  it('returns true (headless) on Linux without DISPLAY', () => {
+    const origDisplay = process.env.DISPLAY;
+    delete process.env.DISPLAY;
+    try {
+      expect(resolveHeadless("fallback", undefined, () => false, () => "linux")).toBe(true);
+    } finally {
+      if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
+    }
+  });
+
+  it('returns true when headless is true on macOS regardless of platform', () => {
+    expect(resolveHeadless(true, undefined, () => false, () => "darwin")).toBe(true);
+  });
+
+  it('returns false when headless is false on macOS regardless of platform', () => {
+    expect(resolveHeadless(false, undefined, () => false, () => "darwin")).toBe(false);
   });
 });
 
