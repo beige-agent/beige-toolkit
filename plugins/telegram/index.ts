@@ -716,6 +716,11 @@ export function createPlugin(
     meta.modelOverride = { provider, model: modelId };
     ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
 
+    // Also write to the canonical activeModel slot so AgentManager restores the
+    // correct model on session creation (e.g. after a gateway restart) even when
+    // the modelOverride hasn't been read yet from plugin metadata.
+    ctx.persistSessionModel(sessionKey, agentName, provider, modelId);
+
     const displayName = escapeHtml(modelInfo.name);
     const ctxLine = ` <i>(${(modelInfo.contextWindow / 1000).toFixed(0)}k context)</i>`;
     await grammyCtx.reply(
