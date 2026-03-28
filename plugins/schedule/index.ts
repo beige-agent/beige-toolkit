@@ -1313,7 +1313,11 @@ export function createPlugin(
   const storagePath = resolveStoragePath(cfg, ctx);
   const storage = makeStorage(storagePath, resolvedDeps.fs);
 
-  const handler = createHandler(cfg, resolvedDeps);
+  // Ensure the handler uses the same resolved storage path as the tick loop.
+  // Without this, createHandler would call resolveStoragePath(cfg) without ctx,
+  // potentially resolving to a different directory than the tick loop uses.
+  const handlerCfg = { ...cfg, storagePath };
+  const handler = createHandler(handlerCfg, resolvedDeps);
 
   let tickInterval: ReturnType<typeof setInterval> | null = null;
   let tickRunning = false;
