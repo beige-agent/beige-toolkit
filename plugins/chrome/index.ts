@@ -542,7 +542,7 @@ import { join as joinPath } from "path";
 
 export function createPlugin(
   config: Record<string, unknown>,
-  _ctx: PluginContext
+  ctx: PluginContext
 ): PluginInstance {
   const manifestPath = joinPath(import.meta.dirname!, "plugin.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -550,7 +550,7 @@ export function createPlugin(
   // Keep a reference to the real ProcessManager so we can shut it down cleanly
   // when the plugin is torn down (e.g. gateway reload / graceful shutdown).
   const pm = new ProcessManager({
-    beigeDataDir: resolveBeigeDataDir(),
+    beigeDataDir: ctx.dataDir ?? resolveBeigeDataDir(),
     version: (config.version as string) ?? "latest",
     slim: (config.slim as boolean) ?? false,
     headless: (config.headless as boolean | "fallback") ?? "fallback",

@@ -248,11 +248,15 @@ function beigeDir(): string {
   return env ? resolvePath(env) : resolvePath(homedir(), ".beige");
 }
 
-function resolveStoragePath(cfg: ScheduleConfig): string {
+function resolveStoragePath(cfg: ScheduleConfig, ctx?: { dataDir?: string }): string {
   if (cfg.storagePath) {
     return resolvePath(expandTilde(cfg.storagePath));
   }
-  // Default: <beige-home>/plugins/schedule — respects BEIGE_HOME so that
+  // Prefer the first-class plugin data directory from beige core if available
+  if (ctx?.dataDir) {
+    return ctx.dataDir;
+  }
+  // Fallback: <beige-home>/plugins/schedule — respects BEIGE_HOME so that
   // dev runs (where BEIGE_HOME=./.beige) stay fully self-contained.
   return joinPath(beigeDir(), "plugins", "schedule");
 }
@@ -1306,7 +1310,7 @@ export function createPlugin(
     generateId: generateScheduleId,
   };
 
-  const storagePath = resolveStoragePath(cfg);
+  const storagePath = resolveStoragePath(cfg, ctx);
   const storage = makeStorage(storagePath, resolvedDeps.fs);
 
   const handler = createHandler(cfg, resolvedDeps);

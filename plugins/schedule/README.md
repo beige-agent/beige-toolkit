@@ -24,7 +24,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `storagePath` | No | `<BEIGE_HOME>/plugins/schedule` | Directory where schedule and history files are stored. Defaults to the active beige home directory (respects `BEIGE_HOME` env var, falls back to `~/.beige`). Tilde is expanded if set explicitly. |
+| `storagePath` | No | `ctx.dataDir` (`<BEIGE_HOME>/data/schedule`) | Directory where schedule and history files are stored. When omitted, uses the first-class plugin data directory provided by beige core (`ctx.dataDir`), which resolves to `<BEIGE_HOME>/data/schedule/`. Falls back to `<BEIGE_HOME>/plugins/schedule` on older beige versions that don't expose `dataDir`. Tilde is expanded if set explicitly. |
 | `tickInterval` | No | `15` | How often (in seconds) the background loop checks for due schedules. Lower values give more precise timing at the cost of slightly more CPU. |
 | `allowExec` | No | `true` | Allow agents to create `exec`-type schedules that run shell commands on the gateway host. Enabled by default — agents are sandboxed so exec runs on the gateway side of that boundary. Set to `false` to disable if needed. |
 | `maxSchedulesPerAgent` | No | `20` | Maximum number of active (non-completed, non-cancelled) schedules per agent. Prevents runaway schedule creation. |
@@ -88,12 +88,14 @@ A run history record is written to `storagePath/history/` after every execution,
 ## Storage Layout
 
 ```
-~/.beige/plugins/schedule/
+~/.beige/data/schedule/          (default with beige >= next)
   schedules/
     sched_<id>.json      one file per schedule
   history/
     sched_<id>-<ts>.json one file per run
 ```
+
+On older beige versions (without `ctx.dataDir`), the default is `~/.beige/plugins/schedule/`.
 
 ## Security Model
 
