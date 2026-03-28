@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { join } from "path";
 import { resolveBin } from "../_shared/resolve-bin.ts";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,12 @@ interface SessionContext {
   agentDir?: string;
   /** Absolute path on the gateway host to the agent's workspace. */
   workspaceDir?: string;
+  /**
+   * Relative working directory from workspace root (e.g. "repos/myrepo").
+   * Populated by the tool-client from the container's cwd when the agent
+   * invokes github from a subdirectory of /workspace (e.g. via cd+exec).
+   */
+  cwd?: string;
 }
 
 type ToolHandler = (
@@ -201,7 +208,17 @@ export function createHandler(
     // This is critical for commands like `pr create` that read .git/config
     // to discover the repository. Falls back to process.cwd() when not in
     // a session (e.g., tests).
-    const cwd = sessionContext?.workspaceDir ?? process.cwd();
+    //
+    // If the agent invoked github from a subdirectory of /workspace (e.g.
+    // via `cd /workspace/myrepo && github pr create`), the tool-client
+    // captures the container's cwd as a relative path ("myrepo") and the
+    // gateway puts it in sessionContext.cwd. We join it with workspaceDir
+    // so that gh runs in the correct subdirectory on the host — this is
+    // essential for commands that need to operate within a git repository.
+    const workspaceRoot = sessionContext?.workspaceDir ?? process.cwd();
+    const cwd = sessionContext?.cwd
+      ? join(workspaceRoot, sessionContext.cwd)
+      : workspaceRoot;
 
     if (args.length === 0) {
       return {
