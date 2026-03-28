@@ -3,7 +3,7 @@
   "description": "Search the web using the Brave Search API. Provides fast, privacy-focused web search with configurable result limits. Requires a Brave Search API key.",
   "commands": [
     "search <query>                                — Search the web with a query",
-    "search <query> --count <n>                    — Limit results (1-20, default: 5)",
+    "search <query> --count <n>                    — Limit results (1-20, default: 10)",
     "search <query> --country <code>               — Country-specific results (e.g., US, DE, GB)",
     "search <query> --offset <n>                   — Pagination offset (default: 0)"
   ],

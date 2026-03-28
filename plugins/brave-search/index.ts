@@ -44,7 +44,7 @@ interface BraveSearchResponse {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
-const DEFAULT_MAX_RESULTS = 5;
+const DEFAULT_MAX_RESULTS = 10;
 const MAX_RESULTS_CAP = 20;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -229,7 +229,7 @@ export function createPlugin(
           "Privacy-focused, fast web search with optional result limits and country filtering.",
         commands: [
           "search <query>                         — Search the web",
-          "search <query> --count <n>             — Number of results (1-20, default: 5)",
+          "search <query> --count <n>             — Number of results (1-20, default: 10)",
           "search <query> --country <code>        — Country-specific results (e.g. US, DE, GB)",
           "search <query> --offset <n>            — Pagination: skip first N results",
         ],

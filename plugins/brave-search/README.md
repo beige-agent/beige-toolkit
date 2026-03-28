@@ -1,105 +1,112 @@
-# Brave Search Plugin for Beige
+# Brave Search Plugin
 
-A Beige plugin that provides web search capabilities using the [Brave Search API](https://brave.com/search/api/).
-
-## Features
-
-- 🚀 Fast, privacy-focused web search
-- 🌍 Country-specific search results
-- 🔢 Configurable result limits
-- 📄 Pagination support
-- 🎯 Simple, clean interface
+Web search using the Brave Search API — a fast, privacy-focused alternative to Google.
 
 ## Installation
 
-This plugin is part of the beige-toolkit. Install the toolkit to get access:
+Install this tool individually:
 
 ```bash
-npm install @matthias-hausberger/beige
+beige tools install github:matthias-hausberger/beige-toolkit/tools/brave-search
+```
+
+Or install all tools from the toolkit:
+
+```bash
+# From npm
+beige tools install npm:@matthias-hausberger/beige-toolkit
+
+# From GitHub
+beige tools install github:matthias-hausberger/beige-toolkit
 ```
 
 ## Configuration
 
-Add to your agent configuration:
+| Key | Default | Description |
+|-----|---------|-------------|
+| `apiKey` | *(none)* | Brave Search API key. Get one at [brave.com/search/api](https://brave.com/search/api/). Falls back to `BRAVE_API_KEY` environment variable if not set in config. |
+| `maxResults` | `10` | Default number of results to return (1–20). |
+| `timeoutSeconds` | `30` | HTTP request timeout in seconds. |
 
-```json
+## Prerequisites
+
+| Requirement | Details |
+|---|---|
+| Brave Search API key | Create an account at [brave.com/search/api](https://brave.com/search/api/) and generate a key. Free tier covers ~2,000 queries/month. |
+
+## Config Examples
+
+**Basic setup with API key:**
+
+```json5
 {
-  "plugins": {
+  tools: {
     "brave-search": {
       "config": {
-        "apiKey": "YOUR_BRAVE_API_KEY_HERE",
-        "maxResults": 5,
-        "timeoutSeconds": 30
-      }
-    }
-  }
+        "apiKey": "BSA_your_api_key_here",
+      },
+    },
+  },
 }
 ```
 
-### Getting an API Key
-
-1. Visit [https://brave.com/search/api/](https://brave.com/search/api/)
-2. Create an account
-3. Choose a Search plan (free tier available)
-4. Generate an API key from the dashboard
-
-### Environment Variable
-
-Alternatively, set the `BRAVE_API_KEY` environment variable and the plugin will use it automatically:
+**Using environment variable:**
 
 ```bash
-export BRAVE_API_KEY="your-api-key-here"
+export BRAVE_API_KEY="BSA_your_api_key_here"
+```
+
+No `apiKey` in config needed — the plugin picks up `BRAVE_API_KEY` automatically.
+
+**Custom result count and timeout:**
+
+```json5
+{
+  tools: {
+    "brave-search": {
+      "config": {
+        "apiKey": "BSA_your_api_key_here",
+        "maxResults": 5,
+        "timeoutSeconds": 20,
+      },
+    },
+  },
+}
 ```
 
 ## Usage
 
-The plugin provides a `brave` tool that agents can use to perform web searches.
+The plugin provides a `brave` tool with a single `search` subcommand:
 
-### Examples
-
-**Basic search:**
+```bash
+brave search <query>
+brave search <query> --count <n>
+brave search <query> --country <code>
+brave search <query> --offset <n>
 ```
+
+**Examples:**
+
+```bash
+# Basic search
 brave search "cloudflare workers documentation"
-```
 
-**Limit results:**
-```
-brave search "rust programming" --count 3
-```
+# Limit to 3 results
+brave search "typescript best practices" --count 3
 
-**Country-specific search:**
+# German-language results
+brave search "nachrichten heute" --country DE
+
+# Pagination (skip first 10 results)
+brave search "rust programming" --offset 10
 ```
-brave search "news today" --country DE
-```
-
-**Pagination:**
-```
-brave search "machine learning" --offset 10
-```
-
-## Available Commands
-
-| Command | Description |
-|---------|-------------|
-| `search <query>` | Search the web with a query |
-| `search <query> --count <n>` | Limit results (1-20, default: 5) |
-| `search <query> --country <code>` | Country-specific results (e.g., US, DE, GB) |
-| `search <query> --offset <n>` | Pagination offset (default: 0) |
-
-## Configuration Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `apiKey` | string | required | Brave Search API key |
-| `maxResults` | number | 5 | Default maximum results (1-20) |
-| `timeoutSeconds` | number | 30 | Request timeout in seconds |
 
 ## Output Format
 
-Results are formatted for easy reading:
+Results are returned as a numbered list with title, URL, snippet, and age:
 
 ```
-🔍 Found 3 results for "cloudflare workers"
+Search results for: cloudflare workers
 
 1. Cloudflare Workers Documentation
    https://developers.cloudflare.com/workers/
@@ -108,28 +115,55 @@ Results are formatted for easy reading:
 2. What are Cloudflare Workers?
    https://www.cloudflare.com/learning/serverless/what-is-cloudflare-workers/
    Cloudflare Workers is a serverless platform that allows you to deploy...
+
+3. Getting Started with Workers
+   https://developers.cloudflare.com/workers/get-started-guide/
+   This guide walks you through creating and deploying your first Cloudflare...
+   2 days ago
 ```
+
+## Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `search <query>` | Search the web. Required. |
+| `--count <n>` | Number of results to return (1–20). Overrides the config default. |
+| `--country <code>` | 2-letter country code for region-specific results (e.g., `US`, `DE`, `GB`). Case-insensitive. |
+| `--offset <n>` | Pagination: skip first N results. Useful for loading more pages. |
+
+## Error Reference
+
+| Error | Cause |
+|---|---|
+| `Brave Search API key not configured` | No `apiKey` in config and no `BRAVE_API_KEY` environment variable set. |
+| `Brave Search API error 401` | Invalid API key. Verify your key at [brave.com/search/api](https://brave.com/search/api/). |
+| `Brave Search API error 429` | Rate limit exceeded. Upgrade your plan or wait for quota reset. |
+| `Search failed: network error` | Network connectivity issue or request timeout. |
+
+## Implementation Details
+
+- **Target**: Sandbox (runs inside the agent container)
+- **API**: GET `https://api.search.brave.com/res/v1/web/search`
+- **Auth**: `X-Subscription-Token` header
+- **Timeout**: Configurable, defaults to 30 seconds
+- **Rate limits**: Enforced by Brave based on your plan; the plugin does not cache results
 
 ## API Limits
 
-- The Brave Search API is rate-limited based on your plan
-- Free tier typically includes ~2,000 queries/month
-- Be mindful of usage when running automated searches
+Brave Search API is rate-limited by plan:
+
+| Plan | Queries/month |
+|-------|--------------|
+| Free | ~2,000 |
+| Search | $5/month for 1,000 queries (includes $5 credit) |
+
+Monitor usage at [brave.com/search/api](https://brave.com/search/api/) to avoid unexpected charges.
 
 ## Privacy
 
 Brave Search is privacy-focused:
-- Does not track users
-- Does not store personal data
-- This plugin sends queries directly to Brave's API
-- No search history is stored by the plugin
 
-## Development
-
-Based on the Brave Search API documentation:
-- [Brave Search API](https://brave.com/search/api/)
-- [OpenClaw Brave Search Implementation](https://github.com/openclaw/openclaw) (reference)
-
-## License
-
-MIT
+- No user tracking
+- No personal data retention
+- Queries sent directly to Brave's API
+- No search history stored by the plugin

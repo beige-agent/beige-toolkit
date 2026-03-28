@@ -64,7 +64,7 @@ brave search "rust programming" --offset 10
 | Command | Description |
 |---------|-------------|
 | `search <query>` | Search the web with a query |
-| `search <query> --count <n>` | Limit results (1-20, default: 5) |
+| `search <query> --count <n>` | Limit results (1-20, default: 10) |
 | `search <query> --country <code>` | Country-specific results (e.g., US, DE, GB) |
 | `search <query> --offset <n>` | Pagination offset (default: 0) |
 
@@ -73,7 +73,7 @@ brave search "rust programming" --offset 10
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `apiKey` | string | required | Brave Search API key |
-| `maxResults` | number | 5 | Default maximum results (1-20) |
+| `maxResults` | number | 10 | Default maximum results (1-20) |
 | `timeoutSeconds` | number | 30 | Request timeout in seconds |
 
 ## Output Format
