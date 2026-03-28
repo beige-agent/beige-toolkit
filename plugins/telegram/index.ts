@@ -1211,8 +1211,20 @@ function formatToolCall(toolName: string, params: Record<string, unknown>): stri
     }
     case "patch":
       return `patch: ${String(params.path ?? "")}`;
-    default:
-      return `${toolName}: ${JSON.stringify(params).slice(0, 80)}`;
+    default: {
+      // Some tools (e.g. git) use purely positional/flag args with no
+      // key=value pairs, so the parsed params object is empty. Fall back
+      // to the raw _args array injected by the runner for a useful label.
+      const kv = Object.fromEntries(
+        Object.entries(params).filter(([k]) => k !== "_args")
+      );
+      if (Object.keys(kv).length > 0) {
+        return `${toolName}: ${JSON.stringify(kv).slice(0, 80)}`;
+      }
+      const rawArgs = Array.isArray(params._args) ? params._args : [];
+      const cmd = rawArgs.join(" ");
+      return `${toolName}: ${cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd || "(no args)"}`;
+    }
   }
 }
 
