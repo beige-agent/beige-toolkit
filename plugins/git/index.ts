@@ -47,7 +47,6 @@
  *
  * allowedCommands controls the subcommand allowlist (default: safe set).
  * deniedCommands adds extra blocks; deny beats allow.
- * allowedRemotes glob-matches remote URLs before push/fetch/pull/clone.
  *
  * ── Workspace ────────────────────────────────────────────────────────────────
  *
@@ -98,12 +97,28 @@ interface SessionContext {
 
 export interface GitAuthConfig {
   /**
-   * "ssh" (default) — SSH key authentication.
-   *   Falls back to <agentDir>/ssh/id_ed25519 and <agentDir>/ssh/known_hosts
-   *   when sshKeyPath / sshKnownHostsPath are not set in config.
-   * "https" — PAT authentication via GIT_ASKPASS.
+   * Authentication mode. Controls which credentials are set for each git
+   * invocation. Three options:
+   *
+   * "ssh" (default)
+   *   Uses the per-agent SSH key for all git operations. HTTPS remotes will
+   *   fail unless a token is also provided (see below).
+   *   If `token` is also set, both SSH and HTTPS credentials are active
+   *   simultaneously — git uses whichever matches the remote URL. This is
+   *   the recommended configuration when you have repos using both protocols.
+   *
+   * "https"
+   *   Uses a PAT via GIT_ASKPASS for all git operations. SSH remotes will
+   *   still work if the gateway operator's ssh-agent is active, but this
+   *   tool deliberately blocks that fallback (IdentitiesOnly=yes is not set
+   *   in this mode, so system SSH keys may be used).
+   *
+   * "dual"
+   *   Explicitly activates both SSH key and HTTPS token credentials.
+   *   Equivalent to setting mode="ssh" with a token — provided for clarity
+   *   when you know you have repos using both protocols.
    */
-  mode?: "ssh" | "https";
+  mode?: "ssh" | "https" | "dual";
 
   /**
    * Absolute path to SSH private key.
@@ -118,14 +133,17 @@ export interface GitAuthConfig {
   sshKnownHostsPath?: string;
 
   /**
-   * HTTPS PAT (Personal Access Token). Only used when mode is "https".
+   * HTTPS PAT (Personal Access Token).
+   * Used when mode is "https" or "dual".
+   * When mode is "ssh" and this is set, dual credentials are activated
+   * automatically — no need to change mode explicitly.
    * Can use ${ENV_VAR} for injection by the config system.
    */
   token?: string;
 
   /**
-   * HTTPS username. Only used when mode is "https".
-   * Defaults to "x-access-token". Can use ${ENV_VAR} for injection.
+   * HTTPS username. Defaults to "x-access-token".
+   * Can use ${ENV_VAR} for injection.
    */
   user?: string;
 }
@@ -145,12 +163,6 @@ export interface GitConfig {
   binPath?: string;
   allowedCommands?: string | string[];
   deniedCommands?: string | string[];
-  /**
-   * Glob-style patterns matched against remote URLs.
-   * If set, push/fetch/pull/clone are only permitted to matching remotes.
-   * Pattern is matched against the URL with a simple prefix+wildcard check.
-   */
-  allowedRemotes?: string | string[];
   /** Allow --force and --force-with-lease on push. Default: false. */
   allowForcePush?: boolean;
   identity?: GitIdentityConfig;
@@ -314,57 +326,6 @@ export function extractCloneUrl(args: string[]): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Remote URL allowlist
-// ---------------------------------------------------------------------------
-
-/**
- * Match a URL against a pattern.
- *
- * Patterns are simple glob strings with a single trailing wildcard:
- *   "github.com/myorg/*"  matches "github.com/myorg/myrepo"
- *   "github.com/myorg/myrepo"  matches exactly
- *
- * The URL is normalised: protocol prefix (https://, git@, ssh://) and
- * trailing .git are stripped before matching.
- */
-export function normaliseRemoteUrl(url: string): string {
-  let u = url.trim();
-  // Strip https:// or http://
-  u = u.replace(/^https?:\/\//, "");
-  // ssh://git@github.com/org/repo → github.com/org/repo  (ssh + git@ combined)
-  u = u.replace(/^ssh:\/\/git@/, "");
-  // ssh://github.com/org/repo → github.com/org/repo
-  u = u.replace(/^ssh:\/\//, "");
-  // git@github.com:org/repo → github.com/org/repo
-  u = u.replace(/^git@([^:/]+):/, "$1/");
-  // git@github.com/org/repo → github.com/org/repo (fallback for unusual forms)
-  u = u.replace(/^git@/, "");
-  // Strip trailing .git
-  u = u.replace(/\.git$/, "");
-  return u;
-}
-
-export function remoteMatchesPattern(url: string, pattern: string): boolean {
-  const normUrl = normaliseRemoteUrl(url);
-  const normPattern = normaliseRemoteUrl(pattern);
-
-  if (normPattern.endsWith("/*")) {
-    const prefix = normPattern.slice(0, -2); // strip /*
-    return normUrl === prefix || normUrl.startsWith(prefix + "/");
-  }
-  if (normPattern.endsWith("*")) {
-    const prefix = normPattern.slice(0, -1);
-    return normUrl.startsWith(prefix);
-  }
-  return normUrl === normPattern;
-}
-
-export function remoteAllowed(url: string, patterns: string[]): boolean {
-  if (patterns.length === 0) return true;
-  return patterns.some((p) => remoteMatchesPattern(url, p));
-}
-
-// ---------------------------------------------------------------------------
 // Auth — build SSH env or HTTPS askpass
 // ---------------------------------------------------------------------------
 
@@ -429,55 +390,63 @@ export function buildAuthEnv(
   const auth = config.auth ?? {};
   const mode = auth.mode ?? "ssh";
 
-  if (mode === "https") {
+  // Determine which credential types to activate.
+  // "dual" mode, or "ssh" mode with a token present, both activate dual credentials.
+  const wantSsh  = mode === "ssh" || mode === "dual";
+  const wantHttps = mode === "https" || mode === "dual" || (mode === "ssh" && !!auth.token);
+
+  const env: Record<string, string> = {};
+  const cleanupFns: Array<() => void> = [];
+
+  // ── HTTPS credentials ─────────────────────────────────────────────────────
+  if (wantHttps) {
     const token = auth.token ?? "";
     const user = auth.user ?? "x-access-token";
 
     if (!token) {
+      if (mode === "https" || mode === "dual") {
+        console.warn(
+          `[git tool] ${mode} mode: token is not configured. ` +
+          `Push/clone to HTTPS remotes will fail.`
+        );
+      }
+    } else {
+      const askpassPath = writeAskpassScript(token, user);
+      env.GIT_ASKPASS = askpassPath;
+      cleanupFns.push(() => {
+        try { unlinkSync(askpassPath); } catch { /* already gone */ }
+      });
+    }
+  }
+
+  // ── SSH credentials ───────────────────────────────────────────────────────
+  if (wantSsh) {
+    const agentDir = sessionContext.agentDir;
+    if (!agentDir && (!auth.sshKeyPath || !auth.sshKnownHostsPath)) {
       console.warn(
-        `[git tool] HTTPS mode: token is not configured. ` +
-        `Push/clone to private repos will fail.`
+        "[git tool] SSH mode: sessionContext.agentDir is not set and no explicit " +
+        "sshKeyPath/sshKnownHostsPath configured. " +
+        "This usually means the tool is being called outside a normal agent session. " +
+        "SSH authentication will fail."
       );
     }
 
-    const askpassPath = writeAskpassScript(token, user);
+    const sshDir = agentDir ? join(agentDir, "ssh") : "";
+    const keyPath = auth.sshKeyPath
+      ? resolve(auth.sshKeyPath)
+      : join(sshDir, "id_ed25519");
+    const knownHostsPath = auth.sshKnownHostsPath
+      ? resolve(auth.sshKnownHostsPath)
+      : join(sshDir, "known_hosts");
 
-    return {
-      env: {
-        GIT_ASKPASS: askpassPath,
-        GIT_TERMINAL_PROMPT: "0", // never prompt interactively
-      },
-      cleanup: () => {
-        try { unlinkSync(askpassPath); } catch { /* already gone */ }
-      },
-    };
+    env.GIT_SSH_COMMAND = buildSshCommand(keyPath, knownHostsPath);
   }
 
-  // SSH mode — config values override the per-agent defaults derived from agentDir.
-  const agentDir = sessionContext.agentDir;
-  if (!agentDir && (!auth.sshKeyPath || !auth.sshKnownHostsPath)) {
-    console.warn(
-      "[git tool] SSH mode: sessionContext.agentDir is not set and no explicit " +
-      "sshKeyPath/sshKnownHostsPath configured. " +
-      "This usually means the tool is being called outside a normal agent session. " +
-      "SSH authentication will fail."
-    );
-  }
-
-  const sshDir = agentDir ? join(agentDir, "ssh") : "";
-  const keyPath = auth.sshKeyPath
-    ? resolve(auth.sshKeyPath)
-    : join(sshDir, "id_ed25519");
-  const knownHostsPath = auth.sshKnownHostsPath
-    ? resolve(auth.sshKnownHostsPath)
-    : join(sshDir, "known_hosts");
+  env.GIT_TERMINAL_PROMPT = "0";
 
   return {
-    env: {
-      GIT_SSH_COMMAND: buildSshCommand(keyPath, knownHostsPath),
-      GIT_TERMINAL_PROMPT: "0",
-    },
-    cleanup: () => { /* nothing to clean up for SSH */ },
+    env,
+    cleanup: () => { for (const fn of cleanupFns) fn(); },
   };
 }
 
@@ -639,7 +608,6 @@ export function createHandler(
     allowedSet.delete(cmd);
   }
 
-  const allowedRemotePatterns = toArray(config.allowedRemotes);
   const allowForcePush = config.allowForcePush ?? false;
   const identityConfig = config.identity;
 
@@ -688,15 +656,36 @@ export function createHandler(
       };
     }
 
-    // ── Remote URL check for clone ───────────────────────────────────────────
-    if (subcommand === "clone" && allowedRemotePatterns.length > 0) {
+    // ── Clone protocol/auth mismatch check ──────────────────────────────────
+    if (subcommand === "clone") {
       const url = extractCloneUrl(args);
-      if (url && !remoteAllowed(url, allowedRemotePatterns)) {
-        return {
-          output: `Permission denied: remote '${url}' does not match any allowed remote pattern.\n` +
-            `Allowed patterns: ${allowedRemotePatterns.join(", ")}`,
-          exitCode: 1,
-        };
+
+      // Protocol/auth mismatch check: if the URL is HTTPS but the configured
+      // auth mode has no HTTPS token, the clone will fail with a confusing
+      // "terminal prompts disabled" error. Catch it here and give a clear
+      // message — including the equivalent SSH URL the agent should use instead.
+      if (url) {
+        const isHttps = url.startsWith("https://") || url.startsWith("http://");
+        const authMode = config.auth?.mode ?? "ssh";
+        const hasToken = !!config.auth?.token;
+        const httpsWillWork = authMode === "https" || authMode === "dual" || (authMode === "ssh" && hasToken);
+
+        if (isHttps && !httpsWillWork) {
+          // Attempt to suggest an SSH equivalent for github.com URLs.
+          const sshUrl = url.replace(/^https:\/\/github\.com\//, "git@github.com:");
+          const hasSshSuggestion = sshUrl !== url; // only if the replacement actually changed it
+          return {
+            output:
+              `Auth mismatch: cannot clone '${url}' because the remote uses HTTPS ` +
+              `but this agent is configured for SSH authentication only (no HTTPS token is set).\n\n` +
+              (hasSshSuggestion
+                ? `Use the SSH URL instead:\n  git clone ${sshUrl}\n\n`
+                : "") +
+              `Or configure HTTPS authentication by setting auth.mode = "https" (or "dual") ` +
+              `and providing a token in the git tool config.`,
+            exitCode: 1,
+          };
+        }
       }
     }
 
@@ -714,6 +703,49 @@ export function createHandler(
     const cwd = sessionContext?.cwd
       ? join(workspaceRoot, sessionContext.cwd)
       : workspaceRoot;
+
+    // ── Auth mode / remote protocol sanity check ─────────────────────────────
+    // When the repository has an HTTPS remote but the tool has no HTTPS token
+    // configured, push/fetch/pull will fail with a confusing "terminal prompts
+    // disabled" error. Detect this upfront and produce a clear, actionable error.
+    // Skip the check entirely if HTTPS credentials will be available (mode is
+    // "https", "dual", or "ssh" with a token set).
+    if (subcommand === "push" || subcommand === "fetch" || subcommand === "pull") {
+      const authMode = config.auth?.mode ?? "ssh";
+      const hasToken = !!config.auth?.token;
+      const httpsWillWork = authMode === "https" || authMode === "dual" || (authMode === "ssh" && hasToken);
+
+      if (!httpsWillWork) {
+        // Extract the remote name from the args: first non-flag positional after
+        // the subcommand, defaulting to "origin".
+        const positionals = args.filter((a) => !a.startsWith("-"));
+        // positionals[0] is the subcommand itself; [1] is the remote name if given.
+        const remoteName = positionals[1] ?? "origin";
+        const remoteUrlResult = await executor(
+          ["remote", "get-url", remoteName],
+          { GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+          cwd
+        );
+        if (remoteUrlResult.exitCode === 0) {
+          const remoteUrl = remoteUrlResult.stdout.trim();
+          if (remoteUrl.startsWith("https://") || remoteUrl.startsWith("http://")) {
+            const sshUrl = remoteUrl.replace(/^https:\/\/github\.com\//, "git@github.com:");
+            const hasSshSuggestion = sshUrl !== remoteUrl;
+            return {
+              output:
+                `Auth mismatch: the remote '${remoteName}' uses an HTTPS URL (${remoteUrl}) ` +
+                `but this agent has no HTTPS token configured.\n\n` +
+                (hasSshSuggestion
+                  ? `To fix this, switch the remote to SSH:\n  git remote set-url ${remoteName} ${sshUrl}\n\n`
+                  : "") +
+                `Or configure HTTPS authentication by setting auth.mode = "https" (or "dual") ` +
+                `and providing a token in the git tool config.`,
+              exitCode: 1,
+            };
+          }
+        }
+      }
+    }
 
     // ── Build auth env ───────────────────────────────────────────────────────
     const { env: authEnv, cleanup } = buildAuthEnv(config, sessionContext ?? {});

@@ -4,9 +4,6 @@ import {
   extractSubcommand,
   hasForcePushFlag,
   extractCloneUrl,
-  normaliseRemoteUrl,
-  remoteMatchesPattern,
-  remoteAllowed,
   buildAuthEnv,
   buildIdentityEnv,
   type Executor,
@@ -131,100 +128,6 @@ describe("extractCloneUrl", () => {
 
   it("returns null when no URL present", () => {
     expect(extractCloneUrl(["clone"])).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// normaliseRemoteUrl
-// ---------------------------------------------------------------------------
-
-describe("normaliseRemoteUrl", () => {
-  it("strips https://", () => {
-    expect(normaliseRemoteUrl("https://github.com/myorg/myrepo")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("strips .git suffix", () => {
-    expect(normaliseRemoteUrl("https://github.com/myorg/myrepo.git")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("converts git@ SSH format", () => {
-    expect(normaliseRemoteUrl("git@github.com:myorg/myrepo.git")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("strips ssh:// prefix and converts git@ format", () => {
-    expect(normaliseRemoteUrl("ssh://git@github.com/myorg/myrepo")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// remoteMatchesPattern
-// ---------------------------------------------------------------------------
-
-describe("remoteMatchesPattern", () => {
-  it("matches wildcard org pattern", () => {
-    expect(
-      remoteMatchesPattern("https://github.com/myorg/myrepo.git", "github.com/myorg/*")
-    ).toBe(true);
-  });
-
-  it("rejects different org", () => {
-    expect(
-      remoteMatchesPattern("https://github.com/otherorg/myrepo.git", "github.com/myorg/*")
-    ).toBe(false);
-  });
-
-  it("matches exact URL", () => {
-    expect(
-      remoteMatchesPattern("git@github.com:myorg/myrepo.git", "github.com/myorg/myrepo")
-    ).toBe(true);
-  });
-
-  it("does not match subpath of exact pattern", () => {
-    expect(
-      remoteMatchesPattern(
-        "https://github.com/myorg/myrepo/extra",
-        "github.com/myorg/myrepo"
-      )
-    ).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// remoteAllowed
-// ---------------------------------------------------------------------------
-
-describe("remoteAllowed", () => {
-  it("allows all when pattern list is empty", () => {
-    expect(remoteAllowed("https://github.com/anyone/anything", [])).toBe(true);
-  });
-
-  it("allows matching remote", () => {
-    expect(
-      remoteAllowed("https://github.com/myorg/myrepo", ["github.com/myorg/*"])
-    ).toBe(true);
-  });
-
-  it("blocks non-matching remote", () => {
-    expect(
-      remoteAllowed("https://github.com/evil/steal", ["github.com/myorg/*"])
-    ).toBe(false);
-  });
-
-  it("allows when any pattern matches", () => {
-    expect(
-      remoteAllowed("https://github.com/myorg/myrepo", [
-        "github.com/otherorg/*",
-        "github.com/myorg/*",
-      ])
-    ).toBe(true);
   });
 });
 
