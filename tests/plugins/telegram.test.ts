@@ -16,6 +16,7 @@ const mockBotApi = {
   editMessageText: vi.fn().mockResolvedValue(undefined),
   deleteMyCommands: vi.fn().mockResolvedValue(undefined),
   setMyCommands: vi.fn().mockResolvedValue(undefined),
+  sendPhoto: vi.fn().mockResolvedValue({ message_id: 1 }),
 };
 const mockBotInstance = {
   use: vi.fn(),
@@ -65,6 +66,17 @@ function createMockPluginContext(): PluginContext {
     agentNames: ["assistant"],
     getChannel: vi.fn(),
     getRegisteredTools: vi.fn().mockReturnValue([]),
+    createSession: vi.fn().mockResolvedValue(undefined),
+    listSessions: vi.fn().mockResolvedValue([]),
+    getSessionEntry: vi.fn(),
+    compactSession: vi.fn().mockResolvedValue({ tokensBefore: 1000 }),
+    isSessionActive: vi.fn().mockReturnValue(false),
+    abortSession: vi.fn().mockResolvedValue(undefined),
+    disposeSession: vi.fn().mockResolvedValue(undefined),
+    steerSession: vi.fn().mockResolvedValue(undefined),
+    getSessionModel: vi.fn(),
+    getSessionUsage: vi.fn(),
+    getModel: vi.fn(),
     log: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -238,6 +250,91 @@ describe("Telegram Plugin", () => {
       );
       expect(result.exitCode).toBe(0);
     });
+
+    it("sendPhoto with insufficient args", async () => {
+      const result = await tool.handler(["sendPhoto", "123"], undefined);
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain("Usage");
+    });
+
+    it("sendPhoto sends a photo", async () => {
+      const result = await tool.handler(
+        ["sendPhoto", "123456", "/path/to/photo.jpg"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("Photo sent");
+      expect(result.output).toContain("123456");
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123456",
+        "/path/to/photo.jpg",
+        expect.objectContaining({})
+      );
+    });
+
+    it("sendPhoto with caption", async () => {
+      const result = await tool.handler(
+        ["sendPhoto", "123456", "/path/to/photo.jpg", "Check", "this", "out!"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123456",
+        "/path/to/photo.jpg",
+        expect.objectContaining({ caption: "Check this out!" })
+      );
+    });
+
+    it("sendPhoto with --thread option", async () => {
+      const result = await tool.handler(
+        ["sendPhoto", "123456", "--thread", "42", "/path/to/photo.jpg"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("thread 42");
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123456",
+        "/path/to/photo.jpg",
+        expect.objectContaining({ message_thread_id: 42 })
+      );
+    });
+
+    it("sendPhoto with --thread and caption", async () => {
+      const result = await tool.handler(
+        ["sendPhoto", "123456", "--thread", "42", "/path/to/photo.jpg", "Beautiful photo"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123456",
+        "/path/to/photo.jpg",
+        expect.objectContaining({
+          message_thread_id: 42,
+          caption: "Beautiful photo"
+        })
+      );
+    });
+
+    it("sendPhoto accepts send_photo as alias", async () => {
+      const result = await tool.handler(
+        ["send_photo", "123456", "/path/to/photo.jpg"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("sendPhoto with URL", async () => {
+      const result = await tool.handler(
+        ["sendPhoto", "123456", "https://example.com/photo.jpg"],
+        undefined
+      );
+      expect(result.exitCode).toBe(0);
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123456",
+        "https://example.com/photo.jpg",
+        expect.objectContaining({})
+      );
+    });
   });
 
   describe("channel adapter", () => {
@@ -271,6 +368,46 @@ describe("Telegram Plugin", () => {
         "123",
         "Hello",
         expect.objectContaining({ message_thread_id: 42 })
+      );
+    });
+
+    it("sends a photo", async () => {
+      await adapter.sendPhoto("123", undefined, "/path/to/photo.jpg");
+      
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123",
+        "/path/to/photo.jpg",
+        expect.objectContaining({})
+      );
+    });
+
+    it("sends a photo with caption", async () => {
+      await adapter.sendPhoto("123", undefined, "/path/to/photo.jpg", "Nice photo!");
+      
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123",
+        "/path/to/photo.jpg",
+        expect.objectContaining({ caption: "Nice photo!" })
+      );
+    });
+
+    it("sends a photo with thread", async () => {
+      await adapter.sendPhoto("123", "42", "/path/to/photo.jpg");
+      
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123",
+        "/path/to/photo.jpg",
+        expect.objectContaining({ message_thread_id: 42 })
+      );
+    });
+
+    it("sends a photo by URL", async () => {
+      await adapter.sendPhoto("123", undefined, "https://example.com/photo.jpg");
+      
+      expect(mockBotApi.sendPhoto).toHaveBeenCalledWith(
+        "123",
+        "https://example.com/photo.jpg",
+        expect.objectContaining({})
       );
     });
   });
