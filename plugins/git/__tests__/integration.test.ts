@@ -81,7 +81,6 @@ describe("createHandler", () => {
       createHandler({
         allowedCommands: ["status", "commit", "push"],
         deniedCommands: ["push"],
-        allowedRemotes: ["github.com/myorg/*"],
         allowForcePush: false,
         identity: { name: "Agent", email: "agent@example.com" },
         auth: { mode: "ssh" },
@@ -118,33 +117,13 @@ describe("typical git workflow", () => {
     const push = await handler(["push", "origin", "main"], undefined, SESSION);
     assertSuccess(push);
 
-    expect(calls).toHaveLength(4);
+    // push triggers a pre-flight "remote get-url origin" call to detect HTTPS/SSH
+    // mismatch, so the total call count is 5 (status, add, commit, remote get-url, push).
+    expect(calls).toHaveLength(5);
     expect(calls[2].args).toContain("commit");
     expect(calls[2].env.GIT_AUTHOR_NAME).toBe("Beige Agent");
-    expect(calls[3].args).toContain("push");
-  });
-
-  it("clone respects allowedRemotes", async () => {
-    const { executor } = fakeExecutor({ stdout: "Cloning...", exitCode: 0 });
-    const handler = createHandler(
-      { allowedRemotes: ["github.com/myorg/*"] },
-      { executor }
-    );
-
-    const allowed = await handler(
-      ["clone", "https://github.com/myorg/myrepo.git"],
-      undefined,
-      SESSION
-    );
-    assertSuccess(allowed);
-
-    const blocked = await handler(
-      ["clone", "https://github.com/evil/exfil.git"],
-      undefined,
-      SESSION
-    );
-    assertFailure(blocked);
-    expect(blocked.output).toContain("does not match");
+    expect(calls[3].args).toEqual(["remote", "get-url", "origin"]);
+    expect(calls[4].args).toContain("push");
   });
 
   it("git config is always blocked even with explicit allowedCommands", async () => {
@@ -158,6 +137,53 @@ describe("typical git workflow", () => {
     assertFailure(result);
     expect(result.output).toContain("permanently blocked");
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTPS clone blocking (SSH-only auth)
+// ---------------------------------------------------------------------------
+
+describe("HTTPS clone blocking", () => {
+  it("blocks HTTPS clone when SSH-only auth is configured", async () => {
+    const { executor } = fakeExecutor({ stdout: "", exitCode: 0 });
+    const handler = createHandler({ auth: { mode: "ssh" } }, { executor });
+
+    const result = await handler(
+      ["clone", "https://github.com/myorg/myrepo.git"],
+      undefined,
+      SESSION
+    );
+    assertFailure(result);
+    expect(result.output).toContain("Auth mismatch");
+    expect(result.output).toContain("git clone git@github.com:myorg/myrepo.git");
+  });
+
+  it("allows HTTPS clone when token is configured", async () => {
+    const { executor } = fakeExecutor({ stdout: "Cloning...", exitCode: 0 });
+    const handler = createHandler(
+      { auth: { mode: "ssh", token: "ghp_test" } },
+      { executor }
+    );
+
+    const result = await handler(
+      ["clone", "https://github.com/myorg/myrepo.git"],
+      undefined,
+      SESSION
+    );
+    assertSuccess(result);
+  });
+
+  it("allows SSH clone regardless of auth mode", async () => {
+    const { executor } = fakeExecutor({ stdout: "Cloning...", exitCode: 0 });
+    const handler = createHandler({ auth: { mode: "ssh" } }, { executor });
+
+    const result = await handler(
+      ["clone", "git@github.com:myorg/myrepo.git"],
+      undefined,
+      SESSION
+    );
+    assertSuccess(result);
   });
 });
 

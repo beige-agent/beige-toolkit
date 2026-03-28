@@ -4,9 +4,6 @@ import {
   extractSubcommand,
   hasForcePushFlag,
   extractCloneUrl,
-  normaliseRemoteUrl,
-  remoteMatchesPattern,
-  remoteAllowed,
   buildAuthEnv,
   buildIdentityEnv,
   type Executor,
@@ -131,100 +128,6 @@ describe("extractCloneUrl", () => {
 
   it("returns null when no URL present", () => {
     expect(extractCloneUrl(["clone"])).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// normaliseRemoteUrl
-// ---------------------------------------------------------------------------
-
-describe("normaliseRemoteUrl", () => {
-  it("strips https://", () => {
-    expect(normaliseRemoteUrl("https://github.com/myorg/myrepo")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("strips .git suffix", () => {
-    expect(normaliseRemoteUrl("https://github.com/myorg/myrepo.git")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("converts git@ SSH format", () => {
-    expect(normaliseRemoteUrl("git@github.com:myorg/myrepo.git")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-
-  it("strips ssh:// prefix and converts git@ format", () => {
-    expect(normaliseRemoteUrl("ssh://git@github.com/myorg/myrepo")).toBe(
-      "github.com/myorg/myrepo"
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// remoteMatchesPattern
-// ---------------------------------------------------------------------------
-
-describe("remoteMatchesPattern", () => {
-  it("matches wildcard org pattern", () => {
-    expect(
-      remoteMatchesPattern("https://github.com/myorg/myrepo.git", "github.com/myorg/*")
-    ).toBe(true);
-  });
-
-  it("rejects different org", () => {
-    expect(
-      remoteMatchesPattern("https://github.com/otherorg/myrepo.git", "github.com/myorg/*")
-    ).toBe(false);
-  });
-
-  it("matches exact URL", () => {
-    expect(
-      remoteMatchesPattern("git@github.com:myorg/myrepo.git", "github.com/myorg/myrepo")
-    ).toBe(true);
-  });
-
-  it("does not match subpath of exact pattern", () => {
-    expect(
-      remoteMatchesPattern(
-        "https://github.com/myorg/myrepo/extra",
-        "github.com/myorg/myrepo"
-      )
-    ).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// remoteAllowed
-// ---------------------------------------------------------------------------
-
-describe("remoteAllowed", () => {
-  it("allows all when pattern list is empty", () => {
-    expect(remoteAllowed("https://github.com/anyone/anything", [])).toBe(true);
-  });
-
-  it("allows matching remote", () => {
-    expect(
-      remoteAllowed("https://github.com/myorg/myrepo", ["github.com/myorg/*"])
-    ).toBe(true);
-  });
-
-  it("blocks non-matching remote", () => {
-    expect(
-      remoteAllowed("https://github.com/evil/steal", ["github.com/myorg/*"])
-    ).toBe(false);
-  });
-
-  it("allows when any pattern matches", () => {
-    expect(
-      remoteAllowed("https://github.com/myorg/myrepo", [
-        "github.com/otherorg/*",
-        "github.com/myorg/*",
-      ])
-    ).toBe(true);
   });
 });
 
@@ -509,32 +412,33 @@ describe("force-push protection", () => {
     );
     const result = await handler(["push", "--force", "origin", "main"], undefined, SESSION);
     expect(result.exitCode).toBe(0);
-    expect(calls).toHaveLength(1);
+    // Pre-flight fires "remote get-url origin" (1 call) then the actual push (1 call).
+    expect(calls).toHaveLength(2);
+    expect(calls[1].args).toContain("push");
   });
 });
 
 // ---------------------------------------------------------------------------
-// createHandler — allowedRemotes (clone)
+// createHandler — HTTPS clone blocking
 // ---------------------------------------------------------------------------
 
-describe("allowedRemotes", () => {
-  it("blocks clone to non-allowed remote", async () => {
-    const { handler, calls } = makeHandler({
-      allowedRemotes: ["github.com/myorg/*"],
-    });
+describe("HTTPS clone blocking", () => {
+  it("blocks HTTPS clone when auth mode is ssh and no token", async () => {
+    const { handler, calls } = makeHandler({ auth: { mode: "ssh" } });
     const result = await handler(["clone", "https://github.com/evil/steal.git"]);
     expect(result.exitCode).toBe(1);
-    expect(result.output).toContain("does not match any allowed remote pattern");
+    expect(result.output).toContain("Auth mismatch");
+    expect(result.output).toContain("git clone git@github.com:evil/steal.git");
     expect(calls).toHaveLength(0);
   });
 
-  it("allows clone to matching remote", async () => {
+  it("allows SSH clone with ssh auth mode", async () => {
     const { handler, calls } = makeHandler(
-      { allowedRemotes: ["github.com/myorg/*"] },
+      { auth: { mode: "ssh" } },
       { stdout: "Cloning..." }
     );
     const result = await handler(
-      ["clone", "https://github.com/myorg/myrepo.git"],
+      ["clone", "git@github.com:myorg/myrepo.git"],
       undefined,
       SESSION
     );
@@ -542,10 +446,13 @@ describe("allowedRemotes", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("allows all remotes when allowedRemotes is not set", async () => {
-    const { handler, calls } = makeHandler({}, { stdout: "Cloning..." });
+  it("allows HTTPS clone when token is configured", async () => {
+    const { handler, calls } = makeHandler(
+      { auth: { mode: "ssh", token: "ghp_test" } },
+      { stdout: "Cloning..." }
+    );
     const result = await handler(
-      ["clone", "https://github.com/anyone/anything.git"],
+      ["clone", "https://github.com/myorg/myrepo.git"],
       undefined,
       SESSION
     );
@@ -627,7 +534,7 @@ describe("output formatting", () => {
       { stdout: "Cloning into 'myrepo'...", stderr: "remote: Counting objects: 10" }
     );
     const result = await handler(
-      ["clone", "https://github.com/myorg/myrepo.git"],
+      ["clone", "git@github.com:myorg/myrepo.git"],
       undefined,
       SESSION
     );
