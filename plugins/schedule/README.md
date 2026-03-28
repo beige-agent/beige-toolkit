@@ -28,6 +28,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 | `tickInterval` | No | `15` | How often (in seconds) the background loop checks for due schedules. Lower values give more precise timing at the cost of slightly more CPU. |
 | `allowExec` | No | `true` | Allow agents to create `exec`-type schedules that run shell commands on the gateway host. Enabled by default — agents are sandboxed so exec runs on the gateway side of that boundary. Set to `false` to disable if needed. |
 | `maxSchedulesPerAgent` | No | `20` | Maximum number of active (non-completed, non-cancelled) schedules per agent. Prevents runaway schedule creation. |
+| `maxConsecutiveErrors` | No | `0` | How many consecutive execution errors a schedule is allowed before it is automatically marked as `"failed"` and stopped. With the default of `0`, a schedule is failed on the very first error (no retries). Set to e.g. `2` to allow up to 2 retries (3 total attempts) before the schedule is disabled. The counter resets to `0` on every successful run. |
 
 ## Prerequisites
 

@@ -130,6 +130,9 @@ export interface ScheduleEntry {
   lastRun: string | null;
   runCount: number;
 
+  /** Number of consecutive execution errors (resets on success) */
+  consecutiveErrors: number;
+
   /** For cron schedules: stop after this many runs (null = unlimited) */
   maxRuns: number | null;
   /** For cron schedules: stop after this datetime (null = no expiry) */
@@ -160,6 +163,11 @@ export interface ScheduleConfig {
   allowExec?: boolean;
   /** Max active schedules per agent. Default: 20 */
   maxSchedulesPerAgent?: number;
+  /**
+   * Max consecutive errors before a schedule is automatically paused.
+   * 0 = pause on first error (no retries). Default: 0
+   */
+  maxConsecutiveErrors?: number;
 }
 
 // ── Dependency interfaces (for testing) ───────────────────────────────────────
@@ -296,7 +304,10 @@ function makeStorage(storagePath: string, fs: Required<ScheduleDeps>["fs"]) {
     const path = scheduleFilePath(id);
     if (!fs.exists(path)) return null;
     try {
-      return JSON.parse(fs.readFile(path)) as ScheduleEntry;
+      const entry = JSON.parse(fs.readFile(path)) as ScheduleEntry;
+      // Backward compat: older schedule files may lack consecutiveErrors
+      if (entry.consecutiveErrors === undefined) entry.consecutiveErrors = 0;
+      return entry;
     } catch {
       return null;
     }
@@ -611,6 +622,7 @@ function formatSchedule(entry: ScheduleEntry): string {
   lines.push(`Next run:   ${entry.nextRun ?? "(none)"}`);
   lines.push(`Last run:   ${entry.lastRun ?? "(never)"}`);
   lines.push(`Run count:  ${entry.runCount}`);
+  if (entry.consecutiveErrors > 0) lines.push(`Errors:     ${entry.consecutiveErrors} consecutive`);
   if (entry.maxRuns !== null) lines.push(`Max runs:   ${entry.maxRuns}`);
   if (entry.expiresAt !== null) lines.push(`Expires:    ${entry.expiresAt}`);
   return lines.join("\n");
@@ -746,6 +758,30 @@ async function executeSchedule(
   // Update the entry
   entry.runCount += 1;
   entry.lastRun = runAt;
+
+  // Track consecutive errors and auto-pause when threshold is exceeded
+  if (status === "error") {
+    entry.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
+    const maxConsecErrors = cfg.maxConsecutiveErrors ?? 0;
+    if (entry.consecutiveErrors > maxConsecErrors) {
+      entry.status = "failed";
+      entry.nextRun = null;
+      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveErrors: ${maxConsecErrors})`);
+
+      return {
+        scheduleId: entry.id,
+        runAt,
+        status,
+        sessionKey,
+        output,
+        errorMessage,
+        durationMs: Date.now() - start,
+      };
+    }
+  } else {
+    // Reset consecutive error counter on success
+    entry.consecutiveErrors = 0;
+  }
 
   if (entry.trigger.type === "once") {
     entry.status = "completed";
@@ -931,6 +967,7 @@ function handleCreate(
     nextRun: initialNextRun,
     lastRun: null,
     runCount: 0,
+    consecutiveErrors: 0,
     maxRuns: parsed.maxRuns ?? null,
     expiresAt: parsed.expires ? new Date(parsed.expires).toISOString() : null,
   };
@@ -1275,6 +1312,7 @@ export function createPlugin(
   const handler = createHandler(cfg, resolvedDeps);
 
   let tickInterval: ReturnType<typeof setInterval> | null = null;
+  let tickRunning = false;
 
   return {
     register(reg: PluginRegistrar): void {
@@ -1298,10 +1336,20 @@ export function createPlugin(
       }
 
       tickInterval = setInterval(async () => {
+        // Concurrency guard: skip this tick if the previous one is still running.
+        // This prevents runaway parallel executions when a prompt/exec takes
+        // longer than tickInterval (the root cause of the "every 15 seconds" bug).
+        if (tickRunning) {
+          ctx.log.info("schedule: tick skipped (previous tick still running)");
+          return;
+        }
+        tickRunning = true;
         try {
           await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg));
         } catch (err) {
           ctx.log.error(`schedule: tick error: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          tickRunning = false;
         }
       }, intervalSec * 1000);
     },
