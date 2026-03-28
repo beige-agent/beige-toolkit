@@ -355,4 +355,75 @@ describe("createHandler", () => {
 
     expect(capturedTimeout).toBe(180 * 1000);
   });
+
+  it("resolves cwd from sessionContext.workspaceDir and sessionContext.cwd", async () => {
+    let capturedCwd: string | undefined;
+    const cwdCapturingExecutor = async (
+      cmd: string,
+      args: string[],
+      env: Record<string, string>,
+      timeoutMs: number,
+      cwd?: string
+    ): Promise<ExecResult> => {
+      capturedCwd = cwd;
+      return { stdout: "ok", stderr: "", exitCode: 0 };
+    };
+
+    const handler = createHandler(
+      { apiToken: "test-token" },
+      { executor: cwdCapturingExecutor, resolveWranglerPath: mockPathResolver }
+    );
+    await handler(["deploy"], undefined, {
+      workspaceDir: "/home/agent/workspace",
+      cwd: "myproject",
+    });
+
+    expect(capturedCwd).toBe("/home/agent/workspace/myproject");
+  });
+
+  it("uses workspaceDir as cwd when sessionContext.cwd is absent", async () => {
+    let capturedCwd: string | undefined;
+    const cwdCapturingExecutor = async (
+      cmd: string,
+      args: string[],
+      env: Record<string, string>,
+      timeoutMs: number,
+      cwd?: string
+    ): Promise<ExecResult> => {
+      capturedCwd = cwd;
+      return { stdout: "ok", stderr: "", exitCode: 0 };
+    };
+
+    const handler = createHandler(
+      { apiToken: "test-token" },
+      { executor: cwdCapturingExecutor, resolveWranglerPath: mockPathResolver }
+    );
+    await handler(["deploy"], undefined, {
+      workspaceDir: "/home/agent/workspace",
+    });
+
+    expect(capturedCwd).toBe("/home/agent/workspace");
+  });
+
+  it("falls back to process.cwd() when no sessionContext", async () => {
+    let capturedCwd: string | undefined;
+    const cwdCapturingExecutor = async (
+      cmd: string,
+      args: string[],
+      env: Record<string, string>,
+      timeoutMs: number,
+      cwd?: string
+    ): Promise<ExecResult> => {
+      capturedCwd = cwd;
+      return { stdout: "ok", stderr: "", exitCode: 0 };
+    };
+
+    const handler = createHandler(
+      { apiToken: "test-token" },
+      { executor: cwdCapturingExecutor, resolveWranglerPath: mockPathResolver }
+    );
+    await handler(["deploy"]);
+
+    expect(capturedCwd).toBe(process.cwd());
+  });
 });

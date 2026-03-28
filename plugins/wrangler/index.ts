@@ -100,7 +100,8 @@ export type Executor = (
   cmd: string,
   args: string[],
   env: Record<string, string>,
-  timeoutMs: number
+  timeoutMs: number,
+  cwd?: string
 ) => Promise<ExecResult>;
 
 /** Path resolver — injectable for testing. */
@@ -114,8 +115,23 @@ export interface WranglerContext {
 
 type ToolHandler = (
   args: string[],
-  config?: Record<string, unknown>
+  config?: Record<string, unknown>,
+  sessionContext?: SessionContext
 ) => Promise<{ output: string; exitCode: number }>;
+
+interface SessionContext {
+  sessionKey?: string;
+  channel?: string;
+  agentName?: string;
+  agentDir?: string;
+  workspaceDir?: string;
+  /**
+   * Relative working directory from workspace root (e.g. "repos/myproject").
+   * Populated by the tool-client from the container's cwd when the agent
+   * invokes wrangler from a subdirectory of /workspace (e.g. via cd+exec).
+   */
+  cwd?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Command path extraction (unlimited depth)
@@ -254,10 +270,11 @@ function realExecutor(
   cmd: string,
   args: string[],
   env: Record<string, string>,
-  timeoutMs: number
+  timeoutMs: number,
+  cwd?: string
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, env: { ...process.env, ...env } }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout: timeoutMs, env: { ...process.env, ...env }, cwd }, (err, stdout, stderr) => {
       if (err && (err as NodeJS.ErrnoException).code === "ENOENT") {
         resolve({
           stdout: "",
@@ -325,7 +342,7 @@ export function createHandler(
     });
   }
 
-  return async (args: string[]): Promise<{ output: string; exitCode: number }> => {
+  return async (args: string[], _config?: Record<string, unknown>, sessionContext?: SessionContext): Promise<{ output: string; exitCode: number }> => {
     // ── No args ───────────────────────────────────────────────────────────
     if (args.length === 0) {
       return { output: usageText(), exitCode: 1 };
@@ -363,8 +380,19 @@ export function createHandler(
       env.CLOUDFLARE_ACCOUNT_ID = config.accountId;
     }
 
+    // ── Resolve working directory ────────────────────────────────────────
+    // If the agent invoked wrangler from a subdirectory of /workspace (e.g.
+    // via `cd /workspace/myproject && wrangler deploy`), the tool-client
+    // captures the container's cwd as a relative path and the gateway puts
+    // it in sessionContext.cwd. We join it with workspaceDir so that
+    // wrangler runs in the correct subdirectory on the host.
+    const workspaceRoot = sessionContext?.workspaceDir ?? process.cwd();
+    const cwd = sessionContext?.cwd
+      ? join(workspaceRoot, sessionContext.cwd)
+      : workspaceRoot;
+
     // ── Execute ───────────────────────────────────────────────────────────
-    const result = await executor(wranglerPath, args, env, timeoutMs);
+    const result = await executor(wranglerPath, args, env, timeoutMs, cwd);
 
     // Combine stdout and stderr
     const output = [result.stdout, result.stderr].filter((s) => s.trim()).join("\n");
