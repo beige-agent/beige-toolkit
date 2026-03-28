@@ -238,6 +238,35 @@ export function createHandler(
       };
     }
 
+    // Warn about `github repo clone` protocol behaviour.
+    //
+    // `gh repo clone` derives its clone URL from gh's git_protocol config
+    // (default: "https"). This means the cloned remote will be an HTTPS URL,
+    // which will fail on subsequent git push/fetch/pull if the git tool is
+    // configured for SSH-only authentication.
+    //
+    // We can't change gh's behaviour here, so we surface a clear warning so
+    // the agent can use `git clone git@github.com:...` instead.
+    if (subcommand === "repo" && rest[0] === "clone") {
+      const repoArg = rest[1]; // e.g. "myorg/myrepo" or a full URL
+      // Only warn for shorthand owner/repo form — if a full SSH URL is passed
+      // explicitly (git@... or ssh://...) it will work fine.
+      const isShorthand = repoArg && !repoArg.includes("://") && !repoArg.startsWith("git@");
+      if (isShorthand) {
+        const sshUrl = `git@github.com:${repoArg}.git`;
+        return {
+          output:
+            `'github repo clone ${repoArg}' would clone using HTTPS by default ` +
+            `(gh's git_protocol setting), which will fail if the git tool is ` +
+            `configured for SSH-only authentication.\n\n` +
+            `Use git clone with an explicit SSH URL instead:\n` +
+            `  git clone ${sshUrl}\n\n` +
+            `This guarantees SSH authentication regardless of gh's config.`,
+          exitCode: 1,
+        };
+      }
+    }
+
     const result = await executor([subcommand, ...rest], token, cwd);
 
     // On success return stdout. On failure include both streams so the agent

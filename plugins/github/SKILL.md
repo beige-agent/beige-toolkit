@@ -10,32 +10,53 @@ Your `/workspace` inside the container is a bind mount of the host's `~/.beige/a
 
 This matters for commands like `pr create` that read `.git/config` to discover the repository.
 
-### ✅ DO: Run gh from within your cloned repo
+### ✅ DO: cd into the repo before running repo-aware commands
 
 ```sh
-# First, clone a repo into your workspace
-git clone https://github.com/myorg/myrepo.git myrepo
+# Clone first (use git clone with SSH — see below)
+git clone git@github.com:myorg/myrepo.git myrepo
 
-# Now gh commands work without --repo flag:
-cd myrepo && gh pr list           # ✅ Works (gh reads .git/config)
-gh pr create --title "..." --body "..."  # ✅ Works if run from repo root
+# Then cd in — the tool client captures your cwd and the gateway uses it:
+cd /workspace/myrepo
+github pr create --title "..." --body "..."   # ✅ gh runs in myrepo on the host
+github pr list                                 # ✅ reads .git/config correctly
 ```
 
-### ✅ DO: Use --repo flag for cross-repo operations
+### ✅ DO: Use --repo flag for operations that don't need a local clone
 
 ```sh
-# When NOT inside a git repo, or working with a different repo:
-gh issue list --repo myorg/myrepo
-gh pr view 42 --repo myorg/myrepo
-gh pr create --repo myorg/myrepo --title "..." --body "..."
+github issue list --repo myorg/myrepo
+github pr view 42 --repo myorg/myrepo
+github pr create --repo myorg/myrepo --title "..." --body "..."
 ```
 
 ### ❌ DO NOT: Use absolute container paths
 
 ```sh
 # These will FAIL because /workspace/... doesn't exist on the host:
-gh pr create -R /workspace/myrepo  # ❌ WRONG (path doesn't exist on host)
+github pr create -R /workspace/myrepo   # ❌ WRONG
 ```
+
+## ⚠️ Critical: `github repo clone` Uses HTTPS by Default
+
+`github repo clone myorg/myrepo` is a thin wrapper around `git clone`. The protocol it uses depends on the `git_protocol` setting in gh's config on the gateway host (`gh config get git_protocol`). **The default is HTTPS.**
+
+This means:
+- `github repo clone myorg/myrepo` → clones with `https://github.com/myorg/myrepo.git` by default
+- This will **fail** if the git tool is configured for SSH-only auth (no HTTPS token)
+- The remote in the resulting repo will be HTTPS, so subsequent `git push` will also fail
+
+**Use `git clone` with an SSH URL instead:**
+
+```sh
+# ✅ Always reliable — use git clone with SSH
+git clone git@github.com:myorg/myrepo.git myrepo
+
+# ⚠️ Only works if gh's git_protocol is set to ssh on the gateway host
+github repo clone myorg/myrepo
+```
+
+If you need to use `github repo clone` and your gateway has `gh config set git_protocol ssh` configured, it will produce an SSH remote and work correctly. But since you cannot verify or change that config from inside the sandbox, **prefer `git clone git@github.com:...` for predictable behaviour.**
 
 ## Calling Convention
 
@@ -52,26 +73,26 @@ Output format flags (`--json`, `--jq`, `--template`) work as normal.
 
 ```sh
 # List your repositories
-gh repo list
+github repo list
 
 # List repos for an org
-gh repo list myorg --limit 50
+github repo list myorg --limit 50
 
 # View a specific repo
-gh repo view myorg/myrepo
+github repo view myorg/myrepo
 ```
 
 ### Issues
 
 ```sh
 # List open issues
-gh issue list --repo myorg/myrepo
+github issue list --repo myorg/myrepo
 
 # View a specific issue
-gh issue view 42 --repo myorg/myrepo
+github issue view 42 --repo myorg/myrepo
 
 # Create an issue
-gh issue create --repo myorg/myrepo \
+github issue create --repo myorg/myrepo \
   --title "Bug: something is broken" \
   --body "Description of the problem"
 ```
@@ -80,70 +101,56 @@ gh issue create --repo myorg/myrepo \
 
 ```sh
 # List open PRs
-gh pr list --repo myorg/myrepo
+github pr list --repo myorg/myrepo
 
 # View a PR
-gh pr view 17 --repo myorg/myrepo
+github pr view 17 --repo myorg/myrepo
 
 # Create a PR (from within a cloned repo)
-gh pr create --title "feat: add new feature" --body "What this PR does"
+cd /workspace/myrepo
+github pr create --title "feat: add new feature" --body "What this PR does"
 
-# Create a PR (explicit repo)
-gh pr create --repo myorg/myrepo --title "feat: add new feature" --body "What this PR does"
+# Create a PR (explicit repo, no local clone needed)
+github pr create --repo myorg/myrepo --title "feat: add new feature" --body "What this PR does"
 
 # Checkout a PR locally
-gh pr checkout 17
+github pr checkout 17
 ```
 
 ### Releases
 
 ```sh
 # List releases
-gh release list --repo myorg/myrepo
-
-# View a release
-gh release view v1.2.0 --repo myorg/myrepo
+github release list --repo myorg/myrepo
 ```
 
 ### Workflow Runs
 
 ```sh
 # List workflow runs
-gh run list --repo myorg/myrepo
-
-# View a specific run
-gh run view 12345678 --repo myorg/myrepo
-```
-
-### Raw API
-
-```sh
-# Make a raw GitHub API call (requires explicit opt-in via allowedCommands)
-gh api repos/myorg/myrepo
-
-# POST to the API
-gh api --method POST repos/myorg/myrepo/issues -f title="Bug" -f body="Description"
+github run list --repo myorg/myrepo
 ```
 
 ## Typical Workflow: Create a PR
 
 ```sh
-# 1. Clone the repository
-git clone https://github.com/myorg/myrepo.git myrepo
+# 1. Clone with SSH (always — see above)
+git clone git@github.com:myorg/myrepo.git myrepo
 
 # 2. Create a branch
-git -C myrepo checkout -b feat/my-feature
+cd /workspace/myrepo
+git checkout -b feat/my-feature
 
 # 3. Make changes and commit
-# ... edit files ...
-git -C myrepo add .
-git -C myrepo commit -m "feat: implement feature"
+# ... edit files in /workspace/myrepo/ ...
+git add .
+git commit -m "feat: implement feature"
 
 # 4. Push the branch
-git -C myrepo push -u origin feat/my-feature
+git push -u origin feat/my-feature
 
-# 5. Create the PR (gh reads repo from .git/config)
-gh pr create --repo myorg/myrepo --title "feat: implement feature" --body "Description"
+# 5. Create the PR (cd ensures gh runs in the right directory)
+github pr create --title "feat: implement feature" --body "Description"
 ```
 
 ## Permission Errors
@@ -159,7 +166,7 @@ Permitted subcommands: repo, issue, pr
 
 ## Tips
 
-- Use `--repo owner/repo` when working across multiple repositories
-- For `pr create` without `--repo`, ensure you're working in a cloned git repo
+- Always `cd /workspace/myrepo` before running repo-aware commands like `pr create`
+- Use `--repo owner/repo` for operations that don't need a local clone
 - The `api` subcommand is blocked by default — request opt-in via `allowedCommands`
 - For the full `gh` command reference, see the [gh docs](https://cli.github.com/manual/)

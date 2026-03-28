@@ -43,10 +43,6 @@
         "type": "string | string[]",
         "description": "Blacklist of git subcommands. Always blocked even if present in allowedCommands. Deny beats allow."
       },
-      "allowedRemotes": {
-        "type": "string | string[]",
-        "description": "Glob patterns matched against remote URLs. If set, push/fetch/pull/clone are only permitted to matching remotes. Omit to allow all remotes."
-      },
       "allowForcePush": {
         "type": "boolean",
         "description": "Allow git push --force and --force-with-lease. Default: false."
@@ -57,7 +53,7 @@
       },
       "auth": {
         "type": "object",
-        "description": "Authentication override. When absent, the tool uses the per-agent SSH key at agentDir/ssh/id_ed25519 (recommended). Use this only when you need a non-default key path or HTTPS token auth."
+        "description": "Authentication configuration. Supports three modes: 'ssh' (default) — uses per-agent SSH key; 'https' — uses a PAT token via GIT_ASKPASS; 'dual' — activates both SSH key and HTTPS token simultaneously so the tool works with repos that use either protocol. Setting mode='ssh' and also providing a token is equivalent to 'dual'. Cloning an HTTPS URL when no token is configured is blocked with a clear error and SSH URL suggestion."
       }
     }
   }

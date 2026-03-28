@@ -8,18 +8,22 @@ Run git commands in your workspace. All commands operate on `/workspace` — the
 
 Your `/workspace` inside the container is a bind mount of the host's `~/.beige/agents/<name>/workspace/`. The git tool executes on the host with that directory as its working directory.
 
-### ✅ DO: Use Relative Paths
+### ✅ DO: Use Relative Paths (or cd first)
 
 ```sh
-# All of these work correctly:
+# From the workspace root, use relative paths:
 git status
 git add src/foo.ts
 git commit -m "feat: add feature"
-git diff myrepo/src/main.ts
+git -C myrepo status          # ✅ relative path to subdirectory
 git log myrepo
-```
 
-Relative paths are resolved from `/workspace` (the workspace root).
+# Or cd into the directory first — the tool client captures your cwd:
+cd /workspace/myrepo
+git status                    # ✅ runs in myrepo on the host
+git add .
+git push
+```
 
 ### ❌ DO NOT: Use Absolute Container Paths
 
@@ -32,18 +36,35 @@ git -C /workspace/myrepo status       # ❌ WRONG
 
 The host has no `/workspace` directory — that path only exists inside your container.
 
-### Working with Subdirectories
+## ⚠️ Critical: Always Clone with SSH
 
-If you cloned a repo into a subdirectory:
+**Always use SSH URLs for cloning.** The git tool authenticates via a per-agent SSH key. HTTPS URLs will fail unless an explicit HTTPS token is also configured in `auth.token`.
+
+```sh
+# ✅ SSH — always works with default config
+git clone git@github.com:myorg/myrepo.git
+
+# ❌ HTTPS — fails unless auth.token is configured
+git clone https://github.com/myorg/myrepo.git
+```
+
+If you accidentally try to clone via HTTPS with SSH-only auth, the tool will block it immediately and show you the correct SSH URL to use instead.
+
+### Working with Subdirectories
 
 ```sh
 # Clone creates /workspace/myrepo
-git clone https://github.com/myorg/myrepo.git myrepo
+git clone git@github.com:myorg/myrepo.git myrepo
 
-# Now work relative to workspace root:
+# Work relative to workspace root:
 git -C myrepo status          # ✅ Works
-git status myrepo             # ✅ Works (inside myrepo)
 git add myrepo/src/foo.ts     # ✅ Works
+
+# Or cd first:
+cd /workspace/myrepo
+git status                    # ✅ Works
+git add .
+git push
 ```
 
 ## Calling Convention
@@ -57,11 +78,11 @@ git add myrepo/src/foo.ts     # ✅ Works
 ### Clone a repository
 
 ```sh
-# Clone into current directory (workspace must be empty or use .)
-git clone https://github.com/myorg/myrepo.git .
+# Clone into a subdirectory (SSH — always use this form)
+git clone git@github.com:myorg/myrepo.git myrepo
 
-# Clone into a subdirectory
-git clone https://github.com/myorg/myrepo.git myrepo
+# Clone into workspace root
+git clone git@github.com:myorg/myrepo.git .
 ```
 
 ### Check status and stage files
@@ -129,19 +150,20 @@ Permission denied: subcommand 'push' is not allowed for this agent.
 Permitted subcommands: status, diff, log, fetch, pull
 ```
 
-Use only the subcommands listed.
-
-When a remote URL is not in the allowed list:
-
-```
-Permission denied: remote 'https://github.com/other/repo' does not match any allowed remote pattern.
-Allowed patterns: github.com/myorg/*
-```
-
 When force-push is blocked:
 
 ```
 Permission denied: force-push is not allowed for this agent.
+```
+
+When an HTTPS clone is attempted with SSH-only auth:
+
+```
+Auth mismatch: cannot clone 'https://github.com/myorg/myrepo.git' because the
+remote uses HTTPS but this agent is configured for SSH authentication only.
+
+Use the SSH URL instead:
+  git clone git@github.com:myorg/myrepo.git
 ```
 
 `git config` is always blocked and cannot be enabled.
