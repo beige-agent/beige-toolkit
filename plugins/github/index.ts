@@ -1,5 +1,7 @@
 import { spawn } from "child_process";
 import { resolveBin } from "../_shared/resolve-bin.ts";
+import { existsSync } from "fs";
+import { join as joinPath } from "path";
 
 // ---------------------------------------------------------------------------
 // Types — self-contained, no beige source imports needed.
@@ -8,7 +10,7 @@ import { resolveBin } from "../_shared/resolve-bin.ts";
 /**
  * Session context injected by the beige gateway.
  *
- * The gateway provides the actual host paths — the sandboxed agent only knows
+ * The gateway provides the actual host paths — a sandboxed agent only knows
  * about /workspace inside its container. This context allows the tool to
  * run gh from the correct directory on the gateway host.
  */
@@ -102,10 +104,10 @@ function resolveAllowedCommands(config: Record<string, unknown>): Set<string> {
  * When a token is provided it is passed via the GH_TOKEN environment variable,
  * which gh (and the underlying git credential helper) recognises for both
  * classic personal access tokens (ghp_…) and fine-grained PATs (github_pat_…).
- * This overrides any token that may already be stored in ~/.config/gh/ so the
- * agent-specific token always takes precedence.
+ * This overrides any token that may already be stored in ~/.config/gh/ so that
+ * the agent-specific token always takes precedence.
  *
- * When no token is provided the process environment is inherited as-is, so
+ * When no token is configured the process environment is inherited as-is, so
  * existing gh auth (via `gh auth login`) continues to work.
  *
  * The cwd parameter sets the working directory for the gh subprocess. This is
@@ -113,6 +115,7 @@ function resolveAllowedCommands(config: Record<string, unknown>): Set<string> {
  * repository. The cwd should be the agent's workspace directory on the gateway
  * host (sessionContext.workspaceDir).
  */
+
 /**
  * Resolve the full path to the gh binary.
  *
@@ -171,7 +174,7 @@ export const defaultGhExecutor: GhExecutor = createGhExecutor("gh");
  *
  * Authentication:
  *   - When `config.token` is set it is forwarded to gh via GH_TOKEN, taking
- *     precedence over any locally stored credential.  Both classic personal
+ *     precedence over any locally stored credential. Both classic personal
  *     access tokens (ghp_…) and fine-grained PATs (github_pat_…) are accepted
  *     by gh without any special handling on our side.
  *   - When no token is configured, the tool falls back to whatever gh auth is
@@ -197,7 +200,7 @@ export function createHandler(
     _toolConfig?: Record<string, unknown>,
     sessionContext?: SessionContext
   ) => {
-    // Resolve working directory — the workspace on the gateway host.
+    // Resolve working directory — workspace on the gateway host.
     // This is critical for commands like `pr create` that read .git/config
     // to discover the repository. Falls back to process.cwd() when not in
     // a session (e.g., tests).
@@ -238,6 +241,17 @@ export function createHandler(
       };
     }
 
+    // Validation for pr create — ensure we're in a git repository.
+    // This helps provide a clear error message when gh fails to detect the branch.
+    if (subcommand === "pr" && rest[0] === "create") {
+      if (cwd && !existsSync(joinPath(cwd, ".git"))) {
+        return {
+          output: `No git repository found in working directory.\n\nPlease clone a repository first:\n  git clone <url> <directory>\n  cd <directory>\n\nThen you can create a PR:\n  github pr create --title \"feat: ...\" --body \"...\"`,
+          exitCode: 1,
+        };
+      }
+    }
+
     const result = await executor([subcommand, ...rest], token, cwd);
 
     // On success return stdout. On failure include both streams so the agent
@@ -246,6 +260,14 @@ export function createHandler(
       return {
         output: result.stdout || "(no output)",
         exitCode: 0,
+      };
+    }
+
+    // Provide better error messages for common failures.
+    if (result.stderr.includes("could not determine the current branch")) {
+      return {
+        output: `Failed to determine the current branch. Please ensure you're in a git repository:\n\n  git clone <url> <directory>\n  cd <directory>\n  git checkout -b <branch-name>\n\nThen try again:\n  github pr create --title \"feat: ...\" --body \"...\"`,
+        exitCode: result.exitCode,
       };
     }
 
@@ -273,7 +295,7 @@ export function createPlugin(
   _ctx: PluginContext
 ): PluginInstance {
   const manifestPath = joinPath(import.meta.dirname!, "plugin.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const handler = createHandler(config);
 
   return {
