@@ -51,6 +51,7 @@ const ALL_COMMANDS = [
   "gist",
   "org",
   "project",
+  "search",
   "auth",
   "browse",
   "cache",

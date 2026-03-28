@@ -12,7 +12,11 @@
     "pr view <number> --repo <owner/repo>      \u2014 View a pull request",
     "pr create --repo <owner/repo> --title <title> --body <body>     \u2014 Create a pull request",
     "release list --repo <owner/repo>          \u2014 List releases",
-    "run list --repo <owner/repo>              \u2014 List workflow runs"
+    "run list --repo <owner/repo>              \u2014 List workflow runs",
+    "search repos <query>                      \u2014 Search repositories",
+    "search issues <query>                     \u2014 Search issues",
+    "search prs <query>                        \u2014 Search pull requests",
+    "search commits <query>                    \u2014 Search commits"
   ],
   "provides": {
     "tools": [
