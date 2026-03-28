@@ -44,7 +44,7 @@ import {
 // Subset of the emoji Telegram accepts as message reactions (as of Bot API 7.x).
 // The full set is enforced by the API at runtime; this type just documents the
 // ones we actually use and prevents passing arbitrary strings.
-type TelegramReactionEmoji = "👀" | "🎉" | "😢";
+type TelegramReactionEmoji = "👀" | "😢";
 
 // ── Config types ─────────────────────────────────────────────────────────────
 
@@ -180,7 +180,6 @@ export function createPlugin(
    * Only emoji from Telegram's allowed reaction set are accepted by the API.
    * We use:
    *   👀  — received, being processed
-   *   🎉  — finished successfully (no more actions coming)
    *   😢  — processing failed
    */
   function setReaction(
@@ -190,6 +189,18 @@ export function createPlugin(
   ): void {
     bot.api
       .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+      .catch(() => {});
+  }
+
+  /**
+   * Remove all reactions from a user's message.
+   * Used on successful completion to clear the 👀 "processing" reaction,
+   * leaving the message with no reaction at all.
+   * Silently ignores failures.
+   */
+  function clearReaction(chatId: number, messageId: number): void {
+    bot.api
+      .setMessageReaction(chatId, messageId, [])
       .catch(() => {});
   }
 
@@ -375,8 +386,8 @@ export function createPlugin(
         await sendLongMessageTo(chatId, threadId, response);
       }
 
-      // 🎉 = "LLM finished, no more actions coming"
-      setReaction(chatId, userMessageId, "🎉");
+      // Clear the 👀 reaction — response delivered, no further indicator needed
+      clearReaction(chatId, userMessageId);
     } catch (err) {
       const errorTag = getErrorTag(err);
       ctx.log.error(`[${errorTag}] Session error [${sessionKey}]: ${err}`);
