@@ -1,0 +1,78 @@
+{
+  "name": "github-polling",
+  "description": "GitHub polling channel for Beige agents. Monitors GitHub notifications for mentions and PR activity via periodic API polling.",
+  "commands": [],
+  "provides": {
+    "channel": true,
+    "tools": []
+  },
+  "defaultConfig": {
+    "enabled": false,
+    "token": "",
+    "username": "",
+    "pollIntervalSeconds": 60,
+    "respondTo": "mentions",
+    "includeFullThread": true,
+    "watchedRepos": [],
+    "watchedPrs": [],
+    "agentMapping": {
+      "default": "assistant"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "required": ["username", "agentMapping"],
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable GitHub polling. Default: false (must be explicitly enabled)."
+      },
+      "token": {
+        "type": "string",
+        "description": "GitHub personal access token. Optional if gh is already authenticated on the host."
+      },
+      "username": {
+        "type": "string",
+        "description": "GitHub username to watch for mentions."
+      },
+      "pollIntervalSeconds": {
+        "type": "number",
+        "description": "Polling interval in seconds. Default: 60.",
+        "default": 60,
+        "minimum": 30,
+        "maximum": 3600
+      },
+      "respondTo": {
+        "type": "string",
+        "enum": ["mentions", "all", "watched"],
+        "description": "What to respond to. Options: 'mentions' (default), 'all' (all notifications), 'watched' (only watched repos/PRs)."
+      },
+      "includeFullThread": {
+        "type": "boolean",
+        "description": "Include full comment thread in session context. Default: true.",
+        "default": true
+      },
+      "watchedRepos": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "List of repositories to watch (e.g., ['owner/repo', 'org/project']). Optional."
+      },
+      "watchedPrs": {
+        "type": "array",
+        "items": { "type": "number" },
+        "description": "List of PR/issue IDs to watch globally. Optional."
+      },
+      "agentMapping": {
+        "type": "object",
+        "properties": {
+          "default": {
+            "type": "string",
+            "description": "Default agent name."
+          }
+        },
+        "additionalProperties": { "type": "string" },
+        "required": ["default"]
+      }
+    }
+  }
+}

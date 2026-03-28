@@ -1,0 +1,14 @@
+{
+  "name": "@matthias-hausberger/beige-toolkit-plugin-github-polling",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "GitHub polling channel for Beige agents. Monitors GitHub notifications for mentions and PR activity via polling.",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@matthias-hausberger/beige": "workspace:*"
+  }
+}
