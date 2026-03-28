@@ -534,7 +534,7 @@ describe("output formatting", () => {
       { stdout: "Cloning into 'myrepo'...", stderr: "remote: Counting objects: 10" }
     );
     const result = await handler(
-      ["clone", "https://github.com/myorg/myrepo.git"],
+      ["clone", "git@github.com:myorg/myrepo.git"],
       undefined,
       SESSION
     );
