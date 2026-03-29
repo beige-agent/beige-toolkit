@@ -36,8 +36,8 @@ const mockBotInstance = {
 };
 
 // Mock fs and https so downloadMediaToInbound doesn't hit real I/O
-vi.mock("fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs")>();
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
     mkdirSync: vi.fn(),
@@ -57,7 +57,7 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
-vi.mock("https", () => ({
+vi.mock("node:https", () => ({
   get: vi.fn((_url: string, cb: Function) => {
     // Return a fake response stream that immediately ends
     const res = {
@@ -467,6 +467,8 @@ describe("Telegram Plugin", () => {
     });
 
     function makeGrammyCtx(overrides: Record<string, unknown> = {}) {
+      const extraCtx = overrides._ctx && typeof overrides._ctx === 'object' ? overrides._ctx : {};
+      const { _ctx, ...messageOverrides } = overrides;
       return {
         chat: { id: 99 },
         from: { id: 123456 },
@@ -474,10 +476,10 @@ describe("Telegram Plugin", () => {
           message_id: 42,
           message_thread_id: undefined,
           caption: undefined,
-          ...overrides,
+          ...messageOverrides,
         },
         replyWithChatAction: vi.fn().mockResolvedValue(undefined),
-        ...overrides._ctx,
+        ...extraCtx,
       };
     }
 

@@ -19,10 +19,10 @@
  */
 
 import { Bot, type Context } from "grammy";
-import { createWriteStream, mkdirSync } from "fs";
-import { join, resolve, basename } from "path";
-import * as https from "https";
-import * as http from "http";
+import { createWriteStream, mkdirSync } from "node:fs";
+import { join, resolve, basename } from "node:path";
+import * as https from "node:https";
+import * as http from "node:http";
 import type {
   PluginInstance,
   PluginContext,
