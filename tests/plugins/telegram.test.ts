@@ -467,6 +467,8 @@ describe("Telegram Plugin", () => {
     });
 
     function makeGrammyCtx(overrides: Record<string, unknown> = {}) {
+      const { _ctx, ...messageOverrides } = overrides;
+      const extraCtx = (_ctx && typeof _ctx === "object") ? _ctx as Record<string, unknown> : {};
       return {
         chat: { id: 99 },
         from: { id: 123456 },
@@ -474,10 +476,10 @@ describe("Telegram Plugin", () => {
           message_id: 42,
           message_thread_id: undefined,
           caption: undefined,
-          ...overrides,
+          ...messageOverrides,
         },
         replyWithChatAction: vi.fn().mockResolvedValue(undefined),
-        ...overrides._ctx,
+        ...extraCtx,
       };
     }
 
@@ -498,6 +500,12 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:photo"](grammyCtx);
+      // runSession is fire-and-forget inside handleMediaMessage; flush the microtask queue
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       // Should have fetched the file info for the largest photo
       expect(mockBotApi.getFile).toHaveBeenCalledWith("large_id");
@@ -521,6 +529,11 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:photo"](grammyCtx);
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       await vi.waitFor(() => {
         expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
@@ -539,6 +552,11 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:photo"](grammyCtx);
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       await vi.waitFor(() => {
         expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
@@ -560,6 +578,11 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:document"](grammyCtx);
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       await vi.waitFor(() => {
         expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
@@ -577,6 +600,11 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:video"](grammyCtx);
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       await vi.waitFor(() => {
         expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
@@ -594,6 +622,11 @@ describe("Telegram Plugin", () => {
       });
 
       await handlers["on:message:voice"](grammyCtx);
+      await vi.waitFor(() => {
+        const calls = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls.length +
+                      (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls.length;
+        if (calls === 0) throw new Error("waiting for prompt call");
+      });
 
       await vi.waitFor(() => {
         expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
