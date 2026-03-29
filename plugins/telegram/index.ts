@@ -31,6 +31,12 @@ import type {
   SendMessageOptions,
   ToolResult,
 } from "@matthias-hausberger/beige";
+import {
+  formatChannelError,
+  isAllModelsExhausted,
+  formatAllModelsExhaustedError,
+  getErrorTag,
+} from "@matthias-hausberger/beige";
 
 // Extend the ChannelAdapter interface to include sendPhoto support
 declare module "@matthias-hausberger/beige" {
@@ -44,11 +50,14 @@ declare module "@matthias-hausberger/beige" {
   }
 }
 import {
-  formatChannelError,
-  isAllModelsExhausted,
-  formatAllModelsExhaustedError,
-  getErrorTag,
-} from "@matthias-hausberger/beige";
+  splitFormattedMessage,
+  splitPlainText,
+  formatAndSplit,
+  escapeV2,
+  escapeHtml,
+  contextBar,
+  formatToolCall,
+} from "./format.ts";
 
 // ── Telegram reaction emoji type ─────────────────────────────────────────────
 // Subset of the emoji Telegram accepts as message reactions (as of Bot API 7.x).
@@ -475,6 +484,7 @@ export function createPlugin(
       clearReaction(chatId, userMessageId);
     } catch (err) {
       const errorTag = getErrorTag(err);
+      const errorDetail = err instanceof Error ? err.message : String(err);
       ctx.log.error(`[${errorTag}] Session error [${sessionKey}]: ${err}`);
 
       // 😢 = "processing failed"
@@ -494,11 +504,26 @@ export function createPlugin(
         errorMessage = formatChannelError(err, false);
       }
 
-      await bot.api
-        .sendMessage(chatId, errorMessage, {
+      // Always include the error tag and raw detail so the user sees what went wrong,
+      // not just a generic "something went wrong" — especially for UNKNOWN errors
+      // that were previously only visible in gateway.log.
+      const fullError = `⚠️ [${errorTag}] ${errorMessage}\n\nDetail: ${errorDetail}`;
+
+      try {
+        await bot.api.sendMessage(chatId, fullError, {
           ...(threadId ? { message_thread_id: threadId } : {}),
-        })
-        .catch(() => {});
+        });
+      } catch (sendErr) {
+        // If even the error message fails to send, try a minimal version
+        ctx.log.warn(`Failed to send error message to Telegram: ${sendErr}`);
+        await bot.api
+          .sendMessage(chatId, `⚠️ [${errorTag}] Error: ${errorDetail.slice(0, 3000)}`, {
+            ...(threadId ? { message_thread_id: threadId } : {}),
+          })
+          .catch((finalErr) => {
+            ctx.log.error(`Failed to send ANY error message to Telegram: ${finalErr}`);
+          });
+      }
     }
   }
 
@@ -509,13 +534,28 @@ export function createPlugin(
     threadId: number | undefined,
     text: string
   ): Promise<void> {
-    const v2 = markdownToTelegramV2(text || "(empty response)");
-    const chunks = splitMessage(v2, 4096);
-    for (const chunk of chunks) {
-      await bot.api.sendMessage(chatId, chunk, {
-        parse_mode: "MarkdownV2",
-        ...(threadId ? { message_thread_id: threadId } : {}),
-      });
+    const content = text || "(empty response)";
+    const threadOpts = threadId ? { message_thread_id: threadId } : {};
+
+    // Try MarkdownV2 first, fall back to plain text if Telegram rejects the formatting.
+    // This prevents "can't parse entities" errors from swallowing the entire response.
+    try {
+      const chunks = formatAndSplit(content, 4096);
+      for (const chunk of chunks) {
+        await bot.api.sendMessage(chatId, chunk, {
+          parse_mode: "MarkdownV2",
+          ...threadOpts,
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      ctx.log.warn(`MarkdownV2 send failed, falling back to plain text: ${errMsg}`);
+
+      // Send as plain text — guarantee delivery
+      const plainChunks = splitPlainText(content, 4096);
+      for (const chunk of plainChunks) {
+        await bot.api.sendMessage(chatId, chunk, { ...threadOpts });
+      }
     }
   }
 
@@ -1078,7 +1118,9 @@ export function createPlugin(
       text: string,
       options?: SendMessageOptions
     ): Promise<void> {
-      const chunks = splitMessage(text, 4096);
+      const chunks = options?.parseMode === "markdown"
+        ? splitFormattedMessage(text, 4096)
+        : splitPlainText(text, 4096);
       for (const chunk of chunks) {
         await bot.api.sendMessage(chatId, chunk, {
           parse_mode:
@@ -1295,194 +1337,5 @@ export function createPlugin(
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
-/**
- * Escape the three characters that are special in Telegram HTML mode.
- * Used only for hand-crafted bot command messages (status, compact, etc.).
- */
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/**
- * Escape all characters that have special meaning in Telegram MarkdownV2 outside entities.
- * Reference: https://core.telegram.org/bots/api#markdownv2-style
- */
-function escapeV2(s: string): string {
-  // eslint-disable-next-line no-useless-escape
-  return s.replace(/[_*[\]()~`>#+=|{}.!\-\\]/g, "\\$&");
-}
-
-/**
- * Escape characters that must be escaped inside MarkdownV2 code spans and blocks.
- * Inside code, only backtick and backslash need escaping.
- */
-function escapeV2Code(s: string): string {
-  return s.replace(/[`\\]/g, "\\$&");
-}
-
-/**
- * Convert LLM Markdown output to Telegram MarkdownV2.
- *
- * Why MarkdownV2 instead of HTML:
- *   HTML requires correct nesting of every tag pair. Any ambiguous or overlapping
- *   bold/italic from the LLM (e.g. *italic **bold** italic*) produces mismatched
- *   tags that Telegram rejects, silently dropping the whole message.
- *   MarkdownV2 is the same syntax the LLM already emits — the converter's only
- *   real job is to escape special characters in plain text so Telegram doesn't
- *   misinterpret them as formatting markers.
- *
- * Strategy:
- *  1. Extract fenced code blocks, inline code, and links as opaque placeholders
- *     (each gets its own escaping rules).
- *  2. Escape ALL remaining text with MarkdownV2 escaping — safe baseline, any
- *     un-handled edge case stays as literal text, never a broken entity.
- *  3. Selectively un-escape the formatting markers we want to restore
- *     (bold, italic, strikethrough, headings, blockquotes).
- *  4. Restore placeholders.
- */
-export function markdownToTelegramV2(text: string): string {
-  const placeholders: string[] = [];
-  const save = (s: string): string => {
-    placeholders.push(s);
-    return `\x00P${placeholders.length - 1}\x00`;
-  };
-
-  // ── Step 1a: extract fenced code blocks ─────────────────────────────────
-  let result = text.replace(
-    /```(\w*)\r?\n?([\s\S]*?)```/g,
-    (_m, lang: string, code: string) => {
-      const safe = escapeV2Code(code.replace(/\n$/, "")); // trim one trailing newline
-      return save(
-        lang.trim() ? `\`\`\`${lang.trim()}\n${safe}\n\`\`\`` : `\`\`\`\n${safe}\n\`\`\``
-      );
-    }
-  );
-
-  // ── Step 1b: extract inline code ────────────────────────────────────────
-  result = result.replace(
-    /`([^`\n]+)`/g,
-    (_m, code: string) => save(`\`${escapeV2Code(code)}\``)
-  );
-
-  // ── Step 1c: extract links (before general escaping to preserve URLs) ───
-  // Inside a MarkdownV2 link URL only ) and \ need escaping.
-  result = result.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_m, linkText: string, url: string) =>
-      save(`[${escapeV2(linkText)}](${url.replace(/[)\\]/g, "\\$&")})`)
-  );
-
-  // ── Step 2: escape ALL remaining text ───────────────────────────────────
-  result = escapeV2(result);
-  // Placeholders contain \x00 which is not a V2 special char → survive escaping.
-
-  // ── Step 3: restore formatting (order: bold before italic) ──────────────
-  //
-  // After escapeV2, original `**bold**` becomes `\*\*bold\*\*` in the string.
-  // We match the escaped form and strip the backslashes to restore the markers.
-  // Any case we miss stays as literal escaped text — never a broken entity.
-
-  // Bold ***text*** (bold+italic, rare but valid)
-  result = result.replace(/\\\*\\\*\\\*(.+?)\\\*\\\*\\\*/g, "***$1***");
-
-  // Bold **text**
-  result = result.replace(/\\\*\\\*(.+?)\\\*\\\*/g, "**$1**");
-
-  // Bold __text__ (LLMs sometimes use this for bold; V2 treats __ as underline,
-  // but bold is the intent so we convert to **)
-  result = result.replace(/\\_\\_(.+?)\\_\\_/g, "**$1**");
-
-  // Italic *text* — don't match if adjacent to a * that was already restored
-  result = result.replace(/(?<!\*)\\\*(?!\*)(.+?)(?<!\*)\\\*(?!\*)/g, "*$1*");
-
-  // Italic _text_ — only at word boundaries (avoids snake_case false positives)
-  result = result.replace(/(?<![a-zA-Z0-9])\\_([^_\n]+?)\\_(?![a-zA-Z0-9])/g, "_$1_");
-
-  // Strikethrough: LLM emits ~~text~~; V2 uses ~text~ (single tilde)
-  result = result.replace(/\\~\\~(.+?)\\~\\~/g, "~$1~");
-
-  // Headings → bold (MarkdownV2 has no headings)
-  result = result.replace(/^\\#{1,6} (.+)$/gm, "**$1**");
-
-  // Horizontal rules → separator (after escaping --- becomes \-\-\-)
-  result = result.replace(/^(?:\\-){3,}$|^(?:\\\*){3,}$|^(?:\\_){3,}$/gm, "—————");
-
-  // Blockquotes: `> text` → MarkdownV2 `>text`
-  // After escaping, `>` became `\>`.
-  result = result.replace(/^\\> ?(.+)$/gm, ">$1");
-
-  // ── Step 4: restore placeholders ────────────────────────────────────────
-  result = result.replace(/\x00P(\d+)\x00/g, (_m, i: string) => placeholders[Number(i)]);
-
-  return result;
-}
-
-/**
- * Render a compact ASCII progress bar for context window usage.
- * e.g. "▓▓▓▓▓▓░░░░" for ~60% used.
- */
-function contextBar(used: number, total: number, width = 10): string {
-  const ratio = Math.min(used / total, 1);
-  const filled = Math.round(ratio * width);
-  return "▓".repeat(filled) + "░".repeat(width - filled);
-}
-
-function formatToolCall(toolName: string, params: Record<string, unknown>): string {
-  switch (toolName) {
-    case "exec": {
-      const cmd = String(params.command ?? "");
-      return `exec: ${cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd}`;
-    }
-    case "read":
-      return `read: ${String(params.path ?? "")}`;
-    case "write": {
-      const path = String(params.path ?? "");
-      const bytes = params.bytes != null ? ` (${params.bytes} bytes)` : "";
-      return `write: ${path}${bytes}`;
-    }
-    case "patch":
-      return `patch: ${String(params.path ?? "")}`;
-    default: {
-      // Some tools (e.g. git) use purely positional/flag args with no
-      // key=value pairs, so the parsed params object is empty. Fall back
-      // to the raw _args array injected by the runner for a useful label.
-      const kv = Object.fromEntries(
-        Object.entries(params).filter(([k]) => k !== "_args")
-      );
-      if (Object.keys(kv).length > 0) {
-        return `${toolName}: ${JSON.stringify(kv).slice(0, 80)}`;
-      }
-      const rawArgs = Array.isArray(params._args) ? params._args : [];
-      const cmd = rawArgs.join(" ");
-      return `${toolName}: ${cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd || "(no args)"}`;
-    }
-  }
-}
-
-function splitMessage(text: string, maxLength: number): string[] {
-  if (text.length <= maxLength) return [text];
-
-  const chunks: string[] = [];
-  let current = "";
-
-  for (const line of text.split("\n")) {
-    if (current.length + line.length + 1 > maxLength) {
-      if (current) chunks.push(current);
-      // If a single line exceeds maxLength, split it
-      if (line.length > maxLength) {
-        for (let i = 0; i < line.length; i += maxLength) {
-          chunks.push(line.slice(i, i + maxLength));
-        }
-        current = "";
-      } else {
-        current = line;
-      }
-    } else {
-      current += (current ? "\n" : "") + line;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
+// ── Formatting helpers moved to ./format.ts ──────────────────────────────────
 
