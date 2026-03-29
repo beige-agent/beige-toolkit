@@ -23,6 +23,11 @@ function makeSessionStore(
     listSessions(agentName) {
       return sessions[agentName] ?? [];
     },
+    listSessionKeys(agentName) {
+      return Object.entries(entries)
+        .filter(([, e]) => e.agentName === agentName)
+        .map(([key, e]) => ({ key, sessionFile: e.sessionFile }));
+    },
   };
 }
 

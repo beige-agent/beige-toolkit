@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@matthias-hausberger/beige':
-        specifier: '>=1.0.6'
-        version: 1.0.6(ws@8.20.0)(zod@4.3.6)
+        specifier: '>=1.0.7'
+        version: 1.0.7(ws@8.20.0)(zod@4.3.6)
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.15
@@ -311,8 +311,8 @@ packages:
     resolution: {integrity: sha512-eZ1P9QRKHp78hwx+lITr/mujZqe+eCwL/bOS9vXXkFP070RW4VYum0j7TJ4BrFEH/nNkXRS1tYCXYU05une1bA==}
     engines: {node: '>=20.0.0'}
 
-  '@matthias-hausberger/beige@1.0.6':
-    resolution: {integrity: sha512-kfqBh/Henp5t9EU8ooeCOlnFoy11p6e8XUR9Wa53e0kae1U2Q+ORA4aS/bARZxLp+MdpfcShHB9h/czQDK6tuA==}
+  '@matthias-hausberger/beige@1.0.7':
+    resolution: {integrity: sha512-lPsTZQjDrtYp0a03oQWaWBU9C0W7t9et/1ooXz0lzELo8HQOwlCxSo+Q3KEuOeKLOrsyjy3CNH5M3QVJplyAKw==}
     engines: {node: '>=22.0.0'}
     hasBin: true
 
@@ -2231,7 +2231,7 @@ snapshots:
     optionalDependencies:
       koffi: 2.15.2
 
-  '@matthias-hausberger/beige@1.0.6(ws@8.20.0)(zod@4.3.6)':
+  '@matthias-hausberger/beige@1.0.7(ws@8.20.0)(zod@4.3.6)':
     dependencies:
       '@mariozechner/pi-ai': 0.56.3(ws@8.20.0)(zod@4.3.6)
       '@mariozechner/pi-coding-agent': 0.56.3(ws@8.20.0)(zod@4.3.6)

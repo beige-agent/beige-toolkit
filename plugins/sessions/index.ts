@@ -50,6 +50,7 @@ import { readFileSync, existsSync } from "fs";
 export interface SessionStoreLike {
   getEntry(key: string): SessionEntryLike | undefined;
   listSessions(agentName: string, opts?: { includeToolSessions?: boolean }): SessionInfoLike[];
+  listSessionKeys(agentName: string, opts?: { includeToolSessions?: boolean }): Array<{ key: string; sessionFile: string }>;
 }
 
 export interface SessionEntryLike {
@@ -305,6 +306,7 @@ function handleList(
   if (parsed.format === "json") {
     const items = sessions.map((s, i) => ({
       index: i + 1,
+      key: findKeyForFile(sessionStore, agentName, s.sessionFile),
       sessionFile: s.sessionFile,
       sessionId: s.sessionId,
       createdAt: s.createdAt,
@@ -314,6 +316,7 @@ function handleList(
     if (activeEntry) {
       items.unshift({
         index: 0,
+        key: activeKey!,
         sessionFile: activeEntry.sessionFile,
         sessionId: activeKey!,
         createdAt: activeEntry.createdAt,
@@ -339,7 +342,7 @@ function handleList(
     const date = formatDate(s.createdAt);
     const suffix = i === 0 && !activeEntry ? "  (most recent)" : "";
     // Derive the session key from the store by reverse lookup (best effort via sessionId)
-    const key = findKeyForFile(sessionStore, s.sessionFile) ?? s.sessionId;
+    const key = findKeyForFile(sessionStore, agentName, s.sessionFile);
     lines.push(`  ${key.padEnd(42)}  ${date}${suffix}`);
   }
 
@@ -355,22 +358,25 @@ function handleGet(
   sessionStore: SessionStoreLike,
   parsed: ParsedArgs
 ): { output: string; exitCode: number } {
-  const key = parsed.sessionKey;
-  if (!key) {
+  const keyOrId = parsed.sessionKey;
+  if (!keyOrId) {
     return {
       output: ["Error: session key required.", "", "Usage: sessions get <key>"].join("\n"),
       exitCode: 1,
     };
   }
 
-  // Ownership check
-  const entry = sessionStore.getEntry(key);
-  if (!entry) {
+  // Resolve: accept both session map keys and bare session IDs
+  const resolved = resolveSessionKey(sessionStore, agentName, keyOrId);
+  if (!resolved) {
     return {
-      output: `Error: Session '${key}' not found.`,
+      output: `Error: Session '${keyOrId}' not found.`,
       exitCode: 1,
     };
   }
+  const { key, entry } = resolved;
+
+  // Ownership check
   if (entry.agentName !== agentName) {
     return {
       output: `Error: Permission denied — session '${key}' belongs to agent '${entry.agentName}', not '${agentName}'.`,
@@ -496,27 +502,27 @@ function handleGrep(
   let sessionsToSearch: { key: string; file: string }[];
 
   if (parsed.grepSession) {
-    // Single-session mode — ownership check
-    const entry = sessionStore.getEntry(parsed.grepSession);
-    if (!entry) {
+    // Single-session mode — resolve key or session ID, then ownership check
+    const resolved = resolveSessionKey(sessionStore, agentName, parsed.grepSession);
+    if (!resolved) {
       return {
         output: `Error: Session '${parsed.grepSession}' not found.`,
         exitCode: 1,
       };
     }
-    if (entry.agentName !== agentName) {
+    if (resolved.entry.agentName !== agentName) {
       return {
-        output: `Error: Permission denied — session '${parsed.grepSession}' belongs to agent '${entry.agentName}', not '${agentName}'.`,
+        output: `Error: Permission denied — session '${resolved.key}' belongs to agent '${resolved.entry.agentName}', not '${agentName}'.`,
         exitCode: 1,
       };
     }
-    sessionsToSearch = [{ key: parsed.grepSession, file: entry.sessionFile }];
+    sessionsToSearch = [{ key: resolved.key, file: resolved.entry.sessionFile }];
   } else {
     // All sessions for agent — apply max-sessions limit (newest first)
     const all = sessionStore.listSessions(agentName);
     const limited = all.slice(0, parsed.maxSessions);
     sessionsToSearch = limited.map((s) => ({
-      key: findKeyForFile(sessionStore, s.sessionFile) ?? s.sessionId,
+      key: findKeyForFile(sessionStore, agentName, s.sessionFile),
       file: s.sessionFile,
     }));
   }
@@ -636,23 +642,49 @@ function makeSnippet(text: string, regex: RegExp): string {
 
 /**
  * Reverse-lookup: find the session map key for a given session file path.
- * The sessionStore interface only exposes forward-lookup (key → entry), so
- * we scan the session list for a match via the sessionId embedded in the path.
+ * Uses listSessionKeys to scan the agent's session map entries.
+ * Falls back to the bare sessionId if no match is found.
  */
 function findKeyForFile(
   sessionStore: SessionStoreLike,
+  agentName: string,
   filePath: string
-): string | null {
-  // Extract sessionId from path: .../sessions/<agent>/<sessionId>.jsonl
+): string {
+  const keys = sessionStore.listSessionKeys(agentName);
+  for (const { key, sessionFile } of keys) {
+    if (sessionFile === filePath) return key;
+  }
+  // Fallback: extract sessionId from path
   const match = filePath.match(/([^/\\]+)\.jsonl$/);
-  if (!match) return null;
-  const sessionId = match[1];
+  return match ? match[1] : filePath;
+}
 
-  // The session key is stored in the session map — but we only have getEntry(key).
-  // We need to expose the key somehow. We use a naming convention:
-  // try the TUI default key first, then search via listSessions sessionId match.
-  // This is a best-effort lookup; the sessionId IS shown as fallback if not found.
-  return sessionId;
+/**
+ * Resolve a user-provided key that may be either a session map key or a
+ * bare session ID (filename stem). Returns the canonical map key and entry,
+ * or undefined if not found.
+ */
+function resolveSessionKey(
+  sessionStore: SessionStoreLike,
+  agentName: string,
+  keyOrId: string
+): { key: string; entry: SessionEntryLike } | undefined {
+  // Try direct map key lookup first
+  const direct = sessionStore.getEntry(keyOrId);
+  if (direct) return { key: keyOrId, entry: direct };
+
+  // Fallback: scan session keys for a matching sessionId in the file path
+  const keys = sessionStore.listSessionKeys(agentName);
+  for (const { key, sessionFile } of keys) {
+    // Extract sessionId from file path: .../sessions/<agent>/<sessionId>.jsonl
+    const match = sessionFile.match(/([^/\\]+)\.jsonl$/);
+    if (match && match[1] === keyOrId) {
+      const entry = sessionStore.getEntry(key);
+      if (entry) return { key, entry };
+    }
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +791,9 @@ export function createPlugin(
     },
     listSessions(agentName: string, opts?: { includeToolSessions?: boolean }) {
       return ctx.listSessions(agentName, opts) as SessionInfoLike[];
+    },
+    listSessionKeys(agentName: string, opts?: { includeToolSessions?: boolean }) {
+      return ctx.listSessionKeys(agentName, opts);
     },
   };
 
