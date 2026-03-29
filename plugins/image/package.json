@@ -1,0 +1,10 @@
+{
+  "name": "@matthias-hausberger/beige-plugin-image",
+  "version": "1.0.0",
+  "description": "Image analysis and generation plugin for Beige agents",
+  "type": "module",
+  "main": "index.ts",
+  "peerDependencies": {
+    "@matthias-hausberger/beige": ">=1.0.5"
+  }
+}

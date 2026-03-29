@@ -23,10 +23,10 @@
     "smoke": "bash scripts/smoke.sh"
   },
   "devDependencies": {
-    "@matthias-hausberger/beige": "^1.0.3",
+    "@matthias-hausberger/beige": "link:../beige",
+    "@types/node": "^22.0.0",
     "cron-parser": "^5.5.0",
     "grammy": "^1.35.0",
-    "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
   },

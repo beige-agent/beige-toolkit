@@ -1,0 +1,31 @@
+{
+  "name": "image",
+  "description": "Analyze local image files using a vision-capable LLM. Reuses provider credentials already configured in Beige — no separate API key needed.",
+  "commands": [
+    "analyze <path>                          — Analyze a local image file, returns description",
+    "analyze <path> --prompt \"<question>\"     — Ask a specific question about the image"
+  ],
+  "provides": {
+    "tools": [
+      "image"
+    ]
+  },
+  "defaultConfig": {
+    "analyzeProvider": "anthropic",
+    "analyzeModel": "claude-sonnet-4-5"
+  },
+  "configSchema": {
+    "type": "object",
+    "required": ["analyzeProvider", "analyzeModel"],
+    "properties": {
+      "analyzeProvider": {
+        "type": "string",
+        "description": "Name of the llm.providers entry to use for image analysis. Must be a vision-capable model (e.g. 'anthropic' for Claude, 'openai' for GPT-4o). Credentials are resolved automatically from auth.json / OAuth / env vars."
+      },
+      "analyzeModel": {
+        "type": "string",
+        "description": "Model ID for image analysis (e.g. 'claude-sonnet-4-5', 'gpt-4o')."
+      }
+    }
+  }
+}
