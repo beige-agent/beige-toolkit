@@ -72,18 +72,7 @@ interface TelegramPluginConfig {
 
 // ── Session settings helpers ─────────────────────────────────────────────────
 
-function resolveSettingBool(
-  sessionMeta: Record<string, unknown> | undefined,
-  key: string,
-  channelDefault: boolean | undefined,
-  systemDefault: boolean
-): boolean {
-  // Session override (stored in plugin metadata) > channel default > system default
-  const sessionOverride = sessionMeta?.[key];
-  if (typeof sessionOverride === "boolean") return sessionOverride;
-  if (typeof channelDefault === "boolean") return channelDefault;
-  return systemDefault;
-}
+
 
 // ── Session key helper ───────────────────────────────────────────────────────
 
@@ -219,17 +208,19 @@ export function createPlugin(
   }
 
   function getVerbose(sessionKey: string): boolean {
-    const meta = ctx.getSessionMetadata(sessionKey, "telegram_settings") as
-      | Record<string, unknown>
-      | undefined;
-    return resolveSettingBool(meta, "verbose", cfg.defaults?.verbose, false);
+    // SessionSettingsStore override takes priority, then channel config default, then system default.
+    const override = ctx.getSessionSettings(sessionKey).verbose;
+    if (typeof override === "boolean") return override;
+    if (typeof cfg.defaults?.verbose === "boolean") return cfg.defaults.verbose;
+    return false;
   }
 
   function getStreaming(sessionKey: string): boolean {
-    const meta = ctx.getSessionMetadata(sessionKey, "telegram_settings") as
-      | Record<string, unknown>
-      | undefined;
-    return resolveSettingBool(meta, "streaming", cfg.defaults?.streaming, true);
+    // SessionSettingsStore override takes priority, then channel config default, then system default.
+    const override = ctx.getSessionSettings(sessionKey).streaming;
+    if (typeof override === "boolean") return override;
+    if (typeof cfg.defaults?.streaming === "boolean") return cfg.defaults.streaming;
+    return true;
   }
 
   function getModelOverride(sessionKey: string): { provider: string; model: string } | undefined {
@@ -243,11 +234,11 @@ export function createPlugin(
     return undefined;
   }
 
-  function setSetting(sessionKey: string, key: string, value: boolean): void {
-    const meta =
-      (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
-    meta[key] = value;
-    ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
+  function setSetting(sessionKey: string, key: "verbose" | "streaming", value: boolean): void {
+    // Use SessionSettingsStore via updateSessionSettings — this works even before
+    // the first message is sent (no session map entry required), unlike setSessionMetadata
+    // which silently drops writes when no entry exists yet.
+    ctx.updateSessionSettings(sessionKey, { [key]: value });
   }
 
   // ── Tool start handler for verbose mode ────────────────────────────────
@@ -568,7 +559,10 @@ export function createPlugin(
     const sessionKey = telegramSessionKey(chatId, threadId);
     const agentName = resolveAgent(grammyCtx.from!.id, sessionKey);
 
-    // Clear session-level setting overrides
+    // Clear session-level setting overrides (both plugin metadata and settings store).
+    // clearSessionSettings() uses SessionSettingsStore which works even before
+    // the first message — no session entry required.
+    ctx.clearSessionSettings(sessionKey);
     ctx.setSessionMetadata(sessionKey, "telegram_settings", {});
 
     await ctx.newSession(sessionKey, agentName);
@@ -812,6 +806,13 @@ export function createPlugin(
     // runSession reads it back and passes it as modelOverride to prompt/promptStreaming,
     // which causes getOrCreateSessionWithModel to recreate the pi session with this
     // model while loading the same .jsonl file — history is preserved.
+    //
+    // setSessionMetadata uses sessionStore.updateMetadata which silently drops writes
+    // when no session entry exists yet (before the first message). Create a stub entry
+    // if needed so the write is not lost.
+    if (!ctx.getSessionEntry(sessionKey)) {
+      ctx.createSession(sessionKey, agentName);
+    }
     const meta =
       (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
     meta.modelOverride = { provider, model: modelId };

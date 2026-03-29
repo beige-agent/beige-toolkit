@@ -502,10 +502,14 @@ describe("Telegram Plugin", () => {
       // Should have fetched the file info for the largest photo
       expect(mockBotApi.getFile).toHaveBeenCalledWith("large_id");
 
-      // Should have called prompt/promptStreaming with an image message
+      // runSession is fire-and-forget — wait for prompt to be called
+      await vi.waitFor(() => {
+        const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                           (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+        expect(promptCall).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(promptCall).toBeDefined();
       const messageArg = promptCall[2] as string;
       expect(messageArg).toMatch(/\[Image sent to chat: media\/inbound\/photo-.*\.jpg\]/);
     });
@@ -518,6 +522,10 @@ describe("Telegram Plugin", () => {
 
       await handlers["on:message:photo"](grammyCtx);
 
+      await vi.waitFor(() => {
+        expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+               (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0]).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
       const messageArg = promptCall[2] as string;
@@ -532,6 +540,10 @@ describe("Telegram Plugin", () => {
 
       await handlers["on:message:photo"](grammyCtx);
 
+      await vi.waitFor(() => {
+        expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+               (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0]).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
       const messageArg = promptCall[2] as string;
@@ -549,6 +561,10 @@ describe("Telegram Plugin", () => {
 
       await handlers["on:message:document"](grammyCtx);
 
+      await vi.waitFor(() => {
+        expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+               (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0]).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
       const messageArg = promptCall[2] as string;
@@ -562,6 +578,10 @@ describe("Telegram Plugin", () => {
 
       await handlers["on:message:video"](grammyCtx);
 
+      await vi.waitFor(() => {
+        expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+               (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0]).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
       const messageArg = promptCall[2] as string;
@@ -575,6 +595,10 @@ describe("Telegram Plugin", () => {
 
       await handlers["on:message:voice"](grammyCtx);
 
+      await vi.waitFor(() => {
+        expect((ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+               (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0]).toBeDefined();
+      });
       const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
                          (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
       const messageArg = promptCall[2] as string;

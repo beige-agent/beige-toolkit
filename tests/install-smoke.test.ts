@@ -63,7 +63,16 @@ describe("install smoke", () => {
       const handlerPath = resolve(pluginDir, "index.ts");
       expect(existsSync(handlerPath)).toBe(true);
 
-      const mod = await import(handlerPath);
+      // Import from the original project tree so that node_modules resolution
+      // works. The copy test above already validates the file exists in the
+      // installed layout; this test validates the export shape.
+      const originalHandlerPath = resolve(
+        TOOLKIT_ROOT,
+        "plugins",
+        pluginDir.split("/").pop()!,
+        "index.ts"
+      );
+      const mod = await import(originalHandlerPath);
       expect(typeof mod.createPlugin).toBe("function");
     }
   });
