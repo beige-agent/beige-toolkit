@@ -1128,11 +1128,21 @@ export function createPlugin(
     // mentions on the same issue/PR. The session key is scoped to
     // owner/repo + issue-or-PR number, so each thread gets its own
     // persistent conversation. A new session is only created when none
-    // exists yet.
+    // exists yet (or the session file was deleted).
     const existingSession = ctx.getSessionEntry(sessionKey);
-    if (existingSession) {
+    const sessionFileExists = existingSession?.sessionFile
+      ? existsSync(existingSession.sessionFile)
+      : false;
+
+    if (existingSession && sessionFileExists) {
       ctx.log.info(`Reusing existing session: ${sessionKey} (agent: ${agentName})`);
     } else {
+      if (existingSession && !sessionFileExists) {
+        ctx.log.warn(
+          `Session ${sessionKey} exists in map but session file is missing ` +
+          `(${existingSession.sessionFile}). Creating a new session.`
+        );
+      }
       ctx.log.info(`Creating new session: ${sessionKey} (agent: ${agentName})`);
       await ctx.newSession(sessionKey, agentName);
     }
