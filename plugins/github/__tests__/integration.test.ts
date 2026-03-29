@@ -22,9 +22,9 @@ describe("plugin.json", () => {
     expect(manifest.name).toBe("github");
   });
 
-  it("provides the github tool", () => {
+  it("provides the github tool and channel", () => {
     const manifest = loadToolManifest(TOOL_DIR);
-    expect(manifest.provides).toEqual({ tools: ["github"] });
+    expect(manifest.provides).toEqual({ tools: ["github"], channel: true });
   });
 
   it("has at least one documented command", () => {
