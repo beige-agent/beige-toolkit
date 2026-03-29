@@ -332,6 +332,21 @@ export function createPlugin(
         // If a partial streaming message already exists, edit it with the first chunk
         // (switching from plain-text preview to formatted MarkdownV2 final answer),
         // then send any remaining chunks as new messages.
+
+        // Log empty streaming responses
+        if (!response || response.trim().length === 0) {
+          const modelRef = ctx.getSessionModel(sessionKey);
+          const usage = ctx.getSessionUsage(sessionKey);
+
+          ctx.log.warn(
+            `[empty-response-streaming] Detected for chat:${chatId}` +
+            `${threadId ? `/thread:${threadId}` : ""}` +
+            ` | session:${sessionKey}` +
+            ` | model:${modelRef ? `${modelRef.provider}/${modelRef.modelId}` : 'unknown'}` +
+            ` | tokens:${usage ? usage.inputTokens : 'unknown'}`
+          );
+        }
+
         const finalV2 = markdownToTelegramV2(response || "(empty response)");
         const finalChunks = splitMessage(finalV2, 4096);
         if (sentMessageId !== null) {
@@ -417,6 +432,21 @@ export function createPlugin(
     threadId: number | undefined,
     text: string
   ): Promise<void> {
+    // Log empty responses for debugging and pattern analysis
+    if (!text || text.trim().length === 0) {
+      const sessionKey = telegramSessionKey(chatId, threadId);
+      const modelRef = ctx.getSessionModel(sessionKey);
+      const usage = ctx.getSessionUsage(sessionKey);
+
+      ctx.log.warn(
+        `[empty-response] Detected for chat:${chatId}` +
+        `${threadId ? `/thread:${threadId}` : ""}` +
+        ` | session:${sessionKey}` +
+        ` | model:${modelRef ? `${modelRef.provider}/${modelRef.modelId}` : 'unknown'}` +
+        ` | tokens:${usage ? usage.inputTokens : 'unknown'}`
+      );
+    }
+
     const v2 = markdownToTelegramV2(text || "(empty response)");
     const chunks = splitMessage(v2, 4096);
     for (const chunk of chunks) {
