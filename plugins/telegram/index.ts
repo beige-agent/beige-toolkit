@@ -324,6 +324,11 @@ export function createPlugin(
     const onToolStart = verbose ? makeToolStartHandler(chatId, threadId) : undefined;
     const modelOverride = getModelOverride(sessionKey);
 
+    // Hoisted so the catch block can delete the "⏳ Processing…" placeholder
+    // on error — without this, a failed/timed-out request leaves the placeholder
+    // stuck in chat with no explanation.
+    let processingMsgId: number | null = null;
+
     try {
       // Typing indicator — immediate feedback
       await bot.api.sendChatAction(chatId, "typing", {
@@ -348,7 +353,6 @@ export function createPlugin(
         // shows the *current* turn's output, not a concatenation of all turns.
 
         // ── Step 1: send the "Processing" placeholder immediately ──────────
-        let processingMsgId: number | null = null;
         try {
           const sent = await bot.api.sendMessage(
             chatId,
@@ -475,6 +479,13 @@ export function createPlugin(
 
       // 😢 = "processing failed"
       setReaction(chatId, userMessageId, "😢");
+
+      // Delete the "⏳ Processing…" placeholder so the user isn't left staring
+      // at a stuck message with no context — the error message below replaces it.
+      if (processingMsgId !== null) {
+        bot.api.deleteMessage(chatId, processingMsgId).catch(() => {});
+        processingMsgId = null;
+      }
 
       let errorMessage: string;
       if (isAllModelsExhausted(err)) {
