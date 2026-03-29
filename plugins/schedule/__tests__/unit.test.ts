@@ -509,14 +509,14 @@ describe("pause / resume", () => {
     expect(r.output).toContain("paused");
   });
 
-  it("errors when resuming a non-paused schedule", async () => {
+  it("errors when resuming a non-paused/non-failed schedule", async () => {
     const deps = makeDeps();
     const handler = createHandler(BASE_CFG, deps);
     await handler(["create", "--cron", "0 9 * * *", "--prompt", "daily"], undefined, SESSION_CTX);
 
     const r = await handler(["resume", "sched_test1"], undefined, SESSION_CTX);
     expect(r.exitCode).toBe(1);
-    expect(r.output).toContain("active"); // says it's not paused
+    expect(r.output).toContain("active"); // says it's not paused or failed
   });
 });
 
@@ -787,11 +787,11 @@ describe("test subcommand", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Consecutive error handling & auto-fail
+// onFail behavior
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("consecutive error handling", () => {
-  it("auto-fails a schedule on first error when maxConsecutiveErrors is 0 (default)", async () => {
+describe("onFail behavior", () => {
+  it("ignores errors by default (onFail: \"ignore\") - schedule continues running", async () => {
     let call = 0;
     const deps = makeDeps({
       promptFn: async () => { throw new Error("agent crashed"); },
@@ -810,13 +810,13 @@ describe("consecutive error handling", () => {
     const fs = deps.fs as ReturnType<typeof makeFakeFs>;
     const key = Object.keys(fs.store).find((k) => k.includes("sched_test1.json"))!;
     const saved = JSON.parse(fs.store[key]) as ScheduleEntry;
-    expect(saved.status).toBe("failed");
-    expect(saved.nextRun).toBeNull();
+    expect(saved.status).toBe("active"); // Still active, not failed
+    expect(saved.nextRun).not.toBeNull(); // Still has nextRun scheduled
     expect(saved.consecutiveErrors).toBe(1);
     expect(saved.runCount).toBe(1);
   });
 
-  it("allows retries up to maxConsecutiveErrors before failing", async () => {
+  it("retries up to N times before failing (onFail: { retry: N })", async () => {
     let call = 0;
     const deps = makeDeps({
       promptFn: async () => { throw new Error("still broken"); },
@@ -828,7 +828,7 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveErrors: 2 };
+    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, onFail: { retry: 2 } };
     const handler = createHandler(cfgWithRetries, deps);
     await handler(["create", "--cron", "* * * * *", "--prompt", "retry me"], undefined, SESSION_CTX);
 
@@ -872,7 +872,7 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveErrors: 3 };
+    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, onFail: { retry: 3 } };
     const handler = createHandler(cfgWithRetries, deps);
     await handler(["create", "--cron", "* * * * *", "--prompt", "flaky"], undefined, SESSION_CTX);
 
@@ -912,7 +912,75 @@ describe("consecutive error handling", () => {
     const fs = deps.fs as ReturnType<typeof makeFakeFs>;
     const key = Object.keys(fs.store).find((k) => k.includes("sched_test1.json"))!;
     const saved = JSON.parse(fs.store[key]) as ScheduleEntry;
-    expect(saved.status).toBe("failed");
+    // One-off schedules always complete, regardless of onFail setting
+    expect(saved.status).toBe("completed");
     expect(saved.runCount).toBe(1);
+  });
+
+  it("cancels schedule immediately on first error (onFail: \"cancel\")", async () => {
+    let call = 0;
+    const deps = makeDeps({
+      promptFn: async () => { throw new Error("agent crashed"); },
+      now: () => {
+        call++;
+        return call === 1 ? new Date("2026-03-27T10:00:00Z") : new Date("2026-03-27T10:01:30Z");
+      },
+    });
+
+    const cfgCancel: ScheduleConfig = { ...BASE_CFG, onFail: "cancel" };
+    const handler = createHandler(cfgCancel, deps);
+    await handler(["create", "--cron", "* * * * *", "--prompt", "boom"], undefined, SESSION_CTX);
+
+    const tick = createTickFn(cfgCancel, deps, () => {});
+    await tick();
+
+    const fs = deps.fs as ReturnType<typeof makeFakeFs>;
+    const key = Object.keys(fs.store).find((k) => k.includes("sched_test1.json"))!;
+    const saved = JSON.parse(fs.store[key]) as ScheduleEntry;
+    expect(saved.status).toBe("cancelled");
+    expect(saved.nextRun).toBeNull();
+    expect(saved.consecutiveErrors).toBe(1);
+    expect(saved.runCount).toBe(1);
+  });
+
+  it("allows resuming a failed schedule", async () => {
+    let call = 0;
+    const deps = makeDeps({
+      promptFn: async () => { throw new Error("agent crashed"); },
+      now: () => {
+        call++;
+        return call === 1 ? new Date("2026-03-27T10:00:00Z") : new Date(`2026-03-27T10:${String(call).padStart(2, "0")}:00Z`);
+      },
+    });
+
+    // Use onFail: { retry: 1 } to allow 1 consecutive error before failing
+    const cfgRetry: ScheduleConfig = { ...BASE_CFG, onFail: { retry: 1 } };
+    const handler = createHandler(cfgRetry, deps);
+    await handler(["create", "--cron", "* * * * *", "--prompt", "boom"], undefined, SESSION_CTX);
+
+    const tick = createTickFn(cfgRetry, deps, () => {});
+
+    // First error: consecutiveErrors=1, still active (1 <= 1)
+    await tick();
+    const fs = deps.fs as ReturnType<typeof makeFakeFs>;
+    const key = Object.keys(fs.store).find((k) => k.includes("sched_test1.json"))!;
+    let saved = JSON.parse(fs.store[key]) as ScheduleEntry;
+    expect(saved.status).toBe("active");
+    expect(saved.consecutiveErrors).toBe(1);
+
+    // Second error: consecutiveErrors=2, now failed (2 > 1)
+    await tick();
+    saved = JSON.parse(fs.store[key]) as ScheduleEntry;
+    expect(saved.status).toBe("failed");
+    expect(saved.consecutiveErrors).toBe(2);
+
+    // Resume the failed schedule
+    const result = await handler(["resume", "sched_test1"], undefined, SESSION_CTX);
+    expect(result.exitCode).toBe(0);
+
+    saved = JSON.parse(fs.store[key]) as ScheduleEntry;
+    expect(saved.status).toBe("active");
+    expect(saved.consecutiveErrors).toBe(0); // Reset on resume
+    expect(saved.nextRun).not.toBeNull();
   });
 });

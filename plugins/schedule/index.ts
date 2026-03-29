@@ -74,6 +74,11 @@ import { CronExpressionParser } from "cron-parser";
 export type ScheduleStatus = "active" | "paused" | "completed" | "failed" | "cancelled";
 export type ActionType = "prompt" | "message-file" | "exec";
 
+export type OnFailBehavior =
+  | "ignore"  // Continue running schedule despite failures (default)
+  | { retry: number }  // Retry up to N times before marking as failed
+  | "cancel";  // Stop schedule immediately on first failure
+
 export interface TriggerOnce {
   type: "once";
   /** ISO 8601 UTC string */
@@ -164,8 +169,15 @@ export interface ScheduleConfig {
   /** Max active schedules per agent. Default: 20 */
   maxSchedulesPerAgent?: number;
   /**
-   * Max consecutive errors before a schedule is automatically paused.
-   * 0 = pause on first error (no retries). Default: 0
+   * How to handle execution failures. Default: "ignore" (continue despite failures).
+   * Options:
+   *   - "ignore": Continue running schedule despite failures
+   *   - { retry: N }: Retry up to N consecutive errors before marking as failed
+   *   - "cancel": Stop schedule immediately on first failure
+   */
+  onFail?: OnFailBehavior;
+  /**
+   * @deprecated Use onFail instead. This is kept for backward compatibility.
    */
   maxConsecutiveErrors?: number;
 }
@@ -763,15 +775,32 @@ async function executeSchedule(
   entry.runCount += 1;
   entry.lastRun = runAt;
 
-  // Track consecutive errors and auto-pause when threshold is exceeded
+  // Handle failure based on onFail behavior
   if (status === "error") {
     entry.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
-    const maxConsecErrors = cfg.maxConsecutiveErrors ?? 0;
-    if (entry.consecutiveErrors > maxConsecErrors) {
-      entry.status = "failed";
-      entry.nextRun = null;
-      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveErrors: ${maxConsecErrors})`);
+    const onFail = cfg.onFail ?? "ignore";
 
+    if (onFail === "cancel") {
+      // Cancel immediately on first error
+      entry.status = "cancelled";
+      entry.nextRun = null;
+      log(`schedule ${entry.id} cancelled on first error (onFail: cancel)`);
+    } else if (typeof onFail === "object" && onFail.retry !== undefined) {
+      // Retry up to N times before failing
+      if (entry.consecutiveErrors > onFail.retry) {
+        entry.status = "failed";
+        entry.nextRun = null;
+        log(`schedule ${entry.id} failed after ${entry.consecutiveErrors} consecutive error(s) (onFail: retry:${onFail.retry})`);
+      } else {
+        log(`schedule ${entry.id} error ${entry.consecutiveErrors}/${onFail.retry}, will retry (onFail: retry:${onFail.retry})`);
+      }
+    } else {
+      // Default: "ignore" - continue despite failures
+      log(`schedule ${entry.id} failed but will continue running (onFail: ignore)`);
+    }
+
+    // Early return if schedule was cancelled or failed
+    if (entry.status === "cancelled" || entry.status === "failed") {
       return {
         scheduleId: entry.id,
         runAt,
@@ -847,7 +876,7 @@ export async function runTick(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command handlers
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────���────────────────────────────────────────────────────────────────
 
 function handleCreate(
   parsed: ParsedCreate,
@@ -1082,9 +1111,14 @@ function handleResume(
   const entry = storage.loadSchedule(id);
   if (!entry) return { output: `Error: schedule '${id}' not found.`, exitCode: 1 };
   if (entry.createdBy !== callerAgent) return { output: `Error: schedule '${id}' does not belong to you.`, exitCode: 1 };
-  if (entry.status !== "paused") return { output: `Error: schedule '${id}' is ${entry.status} — only paused schedules can be resumed.`, exitCode: 1 };
+  if (entry.status !== "paused" && entry.status !== "failed") {
+    return { output: `Error: schedule '${id}' is ${entry.status} — only paused or failed schedules can be resumed.`, exitCode: 1 };
+  }
 
-  // Re-compute nextRun in case it has drifted while paused
+  // Reset consecutive errors when resuming from failed state
+  entry.consecutiveErrors = 0;
+
+  // Re-compute nextRun in case it has drifted while paused/failed
   if (entry.trigger.type === "cron") {
     const next = getNextCronRun(entry.trigger.expression, entry.trigger.timezone, deps.now());
     if (!next) {

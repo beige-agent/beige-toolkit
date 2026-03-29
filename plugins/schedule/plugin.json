@@ -40,12 +40,34 @@
       "maxSchedulesPerAgent": {
         "type": "number",
         "description": "Maximum number of active (non-completed, non-cancelled) schedules per agent. Default: 20."
+      },
+      "onFail": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": ["ignore", "cancel"],
+            "description": "\"ignore\" (default) to continue running despite failures, \"cancel\" to stop immediately on first error"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "retry": {
+                "type": "number",
+                "minimum": 1,
+                "description": "Retry up to N consecutive errors before marking as failed"
+              }
+            },
+            "required": ["retry"]
+          }
+        ],
+        "description": "How to handle execution failures. Default: \"ignore\" (continue despite failures)"
       }
     }
   },
   "defaultConfig": {
     "tickInterval": 15,
     "allowExec": true,
-    "maxSchedulesPerAgent": 20
+    "maxSchedulesPerAgent": 20,
+    "onFail": "ignore"
   }
 }
