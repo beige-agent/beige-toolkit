@@ -589,6 +589,7 @@ export function createPlugin(
         "/status — Show current session info and settings\n" +
         "/agent &lt;name&gt; — Switch agent (history preserved)\n" +
         "/model provider/modelId — Switch model (history preserved)\n" +
+        "/model reset — Clear model override, revert to default\n" +
         "/verbose on|off — Toggle tool-call notifications\n" +
         "/v on|off — Same as /verbose (shorthand)\n" +
         "/streaming on|off — Toggle real-time response streaming\n" +
@@ -808,9 +809,46 @@ export function createPlugin(
 
       await grammyCtx.reply(
         `<b>Available models for <code>${escapeHtml(agentName)}</code></b>\n\n` +
-          `${lines}\n\nUsage: /model provider/modelId`,
+          `${lines}\n\n` +
+          `Usage:\n` +
+          `• <code>/model provider/modelId</code> — switch model\n` +
+          `• <code>/model reset</code> — clear override, revert to default`,
         { parse_mode: "HTML" }
       );
+      return;
+    }
+
+    // "reset" subcommand — clear any persisted model override
+    if (modelArg.toLowerCase() === "reset") {
+      const prevModel = ctx.getSessionModel(sessionKey);
+
+      // Remove the canonical activeModel override from session metadata
+      ctx.clearSessionModel(sessionKey);
+
+      // Also remove the plugin-level modelOverride so runSession stops passing it
+      const meta =
+        (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
+      delete meta.modelOverride;
+      ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
+
+      // Dispose the in-memory session so the next prompt creates a fresh one
+      // using the agent's configured primary model instead of the old override.
+      await ctx.abortSession(sessionKey);
+      await ctx.disposeSession(sessionKey);
+
+      const agentCfg = (ctx.config as any).agents?.[agentName];
+      const primaryModel = agentCfg?.model
+        ? `<code>${escapeHtml(`${agentCfg.model.provider}/${agentCfg.model.model}`)}</code>`
+        : "<i>default</i>";
+      const prevLine = prevModel
+        ? ` (was <code>${escapeHtml(`${prevModel.provider}/${prevModel.modelId}`)}</code>)`
+        : "";
+
+      await grammyCtx.reply(
+        `✅ Model reset${prevLine}. Next message will use the default model: ${primaryModel} with normal fallback chain.`,
+        { parse_mode: "HTML" }
+      );
+      ctx.log.info(`Model override cleared for session ${sessionKey}`);
       return;
     }
 
@@ -818,7 +856,7 @@ export function createPlugin(
     const slashIdx = modelArg.indexOf("/");
     if (slashIdx === -1) {
       await grammyCtx.reply(
-        `❌ Expected format: <code>provider/modelId</code>\nExample: <code>anthropic/claude-sonnet-4-5</code>`,
+        `❌ Expected format: <code>provider/modelId</code>\nExample: <code>anthropic/claude-sonnet-4-5</code>\n\nOr use <code>/model reset</code> to clear any model override.`,
         { parse_mode: "HTML" }
       );
       return;
@@ -1289,7 +1327,7 @@ export function createPlugin(
           { command: "compact", description: "Summarise and compress conversation history" },
           { command: "status", description: "Show current session info and settings" },
           { command: "agent", description: "Switch agent: /agent <name> (history preserved)" },
-          { command: "model", description: "Switch model: /model provider/modelId (history preserved)" },
+          { command: "model", description: "Switch model: /model provider/modelId or /model reset" },
           { command: "verbose", description: "Toggle tool-call notifications: /verbose on|off" },
           { command: "v", description: "Shorthand for /verbose: /v on|off" },
           { command: "streaming", description: "Toggle real-time streaming: /streaming on|off" },
