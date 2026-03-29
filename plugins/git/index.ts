@@ -221,6 +221,7 @@ const DEFAULT_ALLOWED: readonly string[] = [
   "rev-parse",
   "ls-files",
   "shortlog",
+  "worktree",
 ];
 
 /**

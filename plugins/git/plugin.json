@@ -19,7 +19,8 @@
     "rebase <branch>                           \u2014 Rebase onto a branch",
     "stash [push|pop|list]                     \u2014 Stash changes",
     "remote [-v]                               \u2014 List remotes",
-    "tag <name>                                \u2014 Create a tag"
+    "tag <name>                                \u2014 Create a tag",
+    "worktree add|list|remove|move              \u2014 Manage linked working trees"
   ],
   "provides": {
     "tools": [
