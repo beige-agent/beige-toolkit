@@ -340,14 +340,38 @@ export function createPlugin(
       }).catch(() => {}); // non-fatal if it fails
 
       if (streaming) {
-        // Streaming mode: create a Telegram message and edit it as deltas arrive.
+        // Streaming mode — two-message pattern to avoid spam push notifications:
         //
-        // When the agent makes tool calls, the LLM may emit a brief text turn
-        // before the tools (e.g. "I'll check that..."). onAssistantTurnStart fires
-        // each time a new LLM turn begins — we reset currentMessage and delete the
-        // partial Telegram message so only the FINAL turn's text is shown.
+        //  1. "Processing…" message (Message 1) sent immediately so the user gets
+        //     instant feedback.  All intermediate delta updates are applied as
+        //     *edits* to this message — edits are silent (no push notifications).
+        //
+        //  2. When streaming is fully complete, the final formatted response is
+        //     sent as a *new* Message 2.  This triggers exactly ONE push notification
+        //     for the final answer.
+        //
+        //  3. Message 1 is then deleted, leaving only the clean final answer.
+        //
+        // onAssistantTurnStart fires each time the LLM starts a new turn (e.g.
+        // after a tool call). We reset the live accumulator so Message 1 always
+        // shows the *current* turn's output, not a concatenation of all turns.
+
+        // ── Step 1: send the "Processing" placeholder immediately ──────────
+        let processingMsgId: number | null = null;
+        try {
+          const sent = await bot.api.sendMessage(
+            chatId,
+            "⏳ Processing…",
+            { ...(threadId ? { message_thread_id: threadId } : {}) }
+          );
+          processingMsgId = sent.message_id;
+        } catch (err) {
+          ctx.log.warn(`Failed to send processing placeholder: ${err}`);
+          // Non-fatal — we can continue without the placeholder
+        }
+
+        // ── Step 2: stream and silently edit Message 1 ────────────────────
         let currentMessage = "";
-        let sentMessageId: number | null = null;
         let lastUpdateTime = 0;
         const UPDATE_INTERVAL_MS = 1000;
 
@@ -362,27 +386,17 @@ export function createPlugin(
             if (now - lastUpdateTime < UPDATE_INTERVAL_MS) return;
             lastUpdateTime = now;
 
+            if (processingMsgId === null) return; // nothing to edit
+
+            // Edit Message 1 silently — no new push notifications.
+            // Show the most recent 4096 chars when content overflows.
+            const preview = currentMessage.length <= 4096
+              ? currentMessage
+              : "…" + currentMessage.slice(-(4096 - 1));
             try {
-              // For intermediate streaming updates we always edit/send a single message.
-              // Sent as plain text (no parse_mode) — converting incomplete Markdown
-              // mid-stream would produce broken HTML. The final message is converted.
-              // If the live text exceeds 4096 chars, show the most recent 4096 (a
-              // tail-window) so the user sees the latest output as it streams in.
-              const preview = currentMessage.length <= 4096
-                ? currentMessage
-                : "…" + currentMessage.slice(-(4096 - 1));
-              if (sentMessageId === null) {
-                const sent = await bot.api.sendMessage(
-                  chatId,
-                  preview,
-                  { ...(threadId ? { message_thread_id: threadId } : {}) }
-                );
-                sentMessageId = sent.message_id;
-              } else {
-                await bot.api.editMessageText(chatId, sentMessageId, preview);
-              }
+              await bot.api.editMessageText(chatId, processingMsgId, preview);
             } catch {
-              // Ignore edit errors — Telegram rejects edits if content unchanged
+              // Telegram rejects edits when content is unchanged — safe to ignore
             }
           },
           {
@@ -412,46 +426,24 @@ export function createPlugin(
               // Silent on failure — the next message will naturally fail/retry
             },
             onAssistantTurnStart: () => {
-              // New LLM turn starting — discard any partial message from the
-              // previous turn (which was pre-tool-call chatter, not the final answer).
-              if (sentMessageId !== null) {
-                bot.api
-                  .deleteMessage(chatId, sentMessageId)
-                  .catch(() => {}); // non-fatal if already gone
-                sentMessageId = null;
-              }
+              // New LLM turn starting (e.g. after a tool call) — reset the live
+              // accumulator so Message 1 shows only the current turn's output.
+              // We do NOT delete/recreate Message 1 here: that would fire a new
+              // push notification for every intermediate turn.
               currentMessage = "";
               lastUpdateTime = 0;
             },
           }
         );
 
-        // Final step: send the complete response formatted as MarkdownV2, split if needed.
-        // If a partial streaming message already exists, edit it with the first chunk
-        // (switching from plain-text preview to formatted MarkdownV2 final answer),
-        // then send any remaining chunks as new messages.
-        const finalV2 = markdownToTelegramV2(response || "(empty response)");
-        const finalChunks = splitMessage(finalV2, 4096);
-        if (sentMessageId !== null) {
-          try {
-            await bot.api.editMessageText(chatId, sentMessageId, finalChunks[0], {
-              parse_mode: "MarkdownV2",
-            });
-          } catch {
-            // Edit failed (e.g. content unchanged or message deleted) — send as new message
-            await bot.api.sendMessage(chatId, finalChunks[0], {
-              parse_mode: "MarkdownV2",
-              ...(threadId ? { message_thread_id: threadId } : {}),
-            });
-          }
-          for (const chunk of finalChunks.slice(1)) {
-            await bot.api.sendMessage(chatId, chunk, {
-              parse_mode: "MarkdownV2",
-              ...(threadId ? { message_thread_id: threadId } : {}),
-            });
-          }
-        } else {
-          await sendLongMessageTo(chatId, threadId, response);
+        // ── Step 3: send the final formatted response as Message 2 ─────────
+        // This triggers exactly one push notification (the new message).
+        // After it's sent we delete Message 1 so only the final answer remains.
+        await sendLongMessageTo(chatId, threadId, response);
+
+        // ── Step 4: delete the Processing placeholder ──────────────────────
+        if (processingMsgId !== null) {
+          bot.api.deleteMessage(chatId, processingMsgId).catch(() => {});
         }
       } else {
         // Non-streaming mode: wait for full response then send
