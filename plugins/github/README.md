@@ -160,6 +160,30 @@ agents: {
 },
 ```
 
+### How the Agent Replies
+
+The polling adapter is **read-only** — it only routes events to agents. Agents reply using the GitHub tool:
+
+```bash
+github issue comment 42 "This looks good, thanks!"
+github pr merge 123 --squash --delete-branch
+```
+
+**Important**: The agent processes each notification group exactly once. Even if:
+- The agent takes several minutes to generate a response
+- Multiple poll intervals pass before the agent responds
+- New notifications arrive for the same PR/issue
+
+...the agent receives **only one prompt/steer message per event group**. This is enforced via a `processingSessionKeys` set that tracks which sessions are currently handling events.
+
+Each time the agent receives a notification:
+1. It receives a **single** prompt or steer message with the event context
+2. It processes the event and decides what to do (comment, merge, etc.)
+3. It uses the GitHub tool to take action
+4. The next poll sees the notification as "already processed" and skips it
+
+**Result**: The agent replies exactly once per notification group, even if it takes multiple poll intervals to respond.
+
 ## Error Reference
 
 | Error | Cause |

@@ -369,6 +369,7 @@ interface PollingState {
   timer: NodeJS.Timeout | null;
   lastCheckTimestamp: string;
   seenNotificationIds: Set<string>;
+  processingSessionKeys: Set<string>;
 }
 
 /**
@@ -397,6 +398,7 @@ export function createPlugin(
     timer: null,
     lastCheckTimestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
     seenNotificationIds: new Set(),
+    processingSessionKeys: new Set(),
   };
 
   // Resolve gh binary
@@ -658,7 +660,19 @@ export function createPlugin(
 
       // Route each group to agent
       for (const [sessionKey, events] of grouped.entries()) {
-        await routeEventGroup(sessionKey, events);
+        // Skip if already processing this session key (prevents duplicate handling)
+        if (state.processingSessionKeys.has(sessionKey)) {
+          ctx.log.info(`Skipping ${sessionKey} — already processing`);
+          continue;
+        }
+
+        // Mark as processing, then route
+        state.processingSessionKeys.add(sessionKey);
+        try {
+          await routeEventGroup(sessionKey, events);
+        } finally {
+          state.processingSessionKeys.delete(sessionKey);
+        }
       }
 
       // Update last check timestamp
