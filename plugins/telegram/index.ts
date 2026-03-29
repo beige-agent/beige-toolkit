@@ -647,27 +647,11 @@ export function createPlugin(
     try {
       const { tokensBefore } = await ctx.compactSession(sessionKey);
 
-      // Show post-compaction context so the user sees the result immediately
-      const modelRef = ctx.getSessionModel(sessionKey);
-      const usage = ctx.getSessionUsage(sessionKey);
-
-      let contextLine = "";
-      if (modelRef && usage) {
-        const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
-        if (modelInfo) {
-          const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
-          const nowK = (usage.inputTokens / 1000).toFixed(1);
-          const maxK = (modelInfo.contextWindow / 1000).toFixed(0);
-          const bar = contextBar(usage.inputTokens, modelInfo.contextWindow);
-          contextLine = `\n\n<b>Context now:</b> ${bar} ${nowK}k / ${maxK}k (${pct}%)`;
-        }
-      }
-
       const beforeK = (tokensBefore / 1000).toFixed(1);
       await grammyCtx.api.editMessageText(
         chatId,
         progressMsg.message_id,
-        `✅ <b>Compacted!</b> Previous context: ~${beforeK}k tokens.${contextLine}`,
+        `✅ <b>Compacted!</b> Previous context: ~${beforeK}k tokens.`,
         { parse_mode: "HTML" }
       );
     } catch (err) {
