@@ -17,6 +17,9 @@ const mockBotApi = {
   deleteMyCommands: vi.fn().mockResolvedValue(undefined),
   setMyCommands: vi.fn().mockResolvedValue(undefined),
   sendPhoto: vi.fn().mockResolvedValue({ message_id: 1 }),
+  setMessageReaction: vi.fn().mockResolvedValue(undefined),
+  sendChatAction: vi.fn().mockResolvedValue(undefined),
+  getFile: vi.fn().mockResolvedValue({ file_path: "photos/file_123.jpg" }),
 };
 const mockBotInstance = {
   use: vi.fn(),
@@ -31,6 +34,43 @@ const mockBotInstance = {
   api: mockBotApi,
   _handlers: handlers,
 };
+
+// Mock fs and https so downloadMediaToInbound doesn't hit real I/O
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    createWriteStream: vi.fn(() => {
+      const events: Record<string, Function[]> = {};
+      return {
+        on: (event: string, cb: Function) => {
+          if (!events[event]) events[event] = [];
+          events[event].push(cb);
+        },
+        close: (cb?: Function) => cb?.(),
+        _trigger: (event: string, ...args: unknown[]) => {
+          events[event]?.forEach((cb) => cb(...args));
+        },
+      };
+    }),
+  };
+});
+
+vi.mock("https", () => ({
+  get: vi.fn((_url: string, cb: Function) => {
+    // Return a fake response stream that immediately ends
+    const res = {
+      pipe: vi.fn((dest: any) => {
+        // Trigger the "finish" event on the write stream
+        setTimeout(() => dest._trigger("finish"), 0);
+      }),
+      on: vi.fn(),
+    };
+    cb(res);
+    return { on: vi.fn() };
+  }),
+}));
 
 vi.mock("grammy", () => {
   // Must use a function() (not arrow) so it can be called with `new`
@@ -82,6 +122,8 @@ function createMockPluginContext(): PluginContext {
       warn: vi.fn(),
       error: vi.fn(),
     },
+    dataDir: "/fake/.beige/data/telegram",
+    persistSessionModel: vi.fn(),
   };
 }
 
@@ -409,6 +451,152 @@ describe("Telegram Plugin", () => {
         "https://example.com/photo.jpg",
         expect.objectContaining({})
       );
+    });
+  });
+
+  describe("incoming media handlers", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      ctx = createMockPluginContext();
+      reg = createMockRegistrar();
+      const plugin = createPlugin(
+        { ...validConfig, workspaceDir: "/fake/workspace" },
+        ctx
+      );
+      plugin.register(reg);
+    });
+
+    function makeGrammyCtx(overrides: Record<string, unknown> = {}) {
+      return {
+        chat: { id: 99 },
+        from: { id: 123456 },
+        message: {
+          message_id: 42,
+          message_thread_id: undefined,
+          caption: undefined,
+          ...overrides,
+        },
+        replyWithChatAction: vi.fn().mockResolvedValue(undefined),
+        ...overrides._ctx,
+      };
+    }
+
+    it("registers handlers for photo, document, video, audio, voice", () => {
+      expect(handlers["on:message:photo"]).toBeTypeOf("function");
+      expect(handlers["on:message:document"]).toBeTypeOf("function");
+      expect(handlers["on:message:video"]).toBeTypeOf("function");
+      expect(handlers["on:message:audio"]).toBeTypeOf("function");
+      expect(handlers["on:message:voice"]).toBeTypeOf("function");
+    });
+
+    it("photo handler downloads file and calls runSession with image message", async () => {
+      const grammyCtx = makeGrammyCtx({
+        photo: [
+          { file_id: "small_id", width: 100, height: 100 },
+          { file_id: "large_id", width: 800, height: 600 },
+        ],
+      });
+
+      await handlers["on:message:photo"](grammyCtx);
+
+      // Should have fetched the file info for the largest photo
+      expect(mockBotApi.getFile).toHaveBeenCalledWith("large_id");
+
+      // Should have called prompt/promptStreaming with an image message
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(promptCall).toBeDefined();
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).toMatch(/\[Image sent to chat: media\/inbound\/photo-.*\.jpg\]/);
+    });
+
+    it("photo handler includes caption in agent message", async () => {
+      const grammyCtx = makeGrammyCtx({
+        photo: [{ file_id: "photo_id", width: 800, height: 600 }],
+        caption: "look at this!",
+      });
+
+      await handlers["on:message:photo"](grammyCtx);
+
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).toContain("Caption: look at this!");
+    });
+
+    it("photo handler without caption omits caption line", async () => {
+      const grammyCtx = makeGrammyCtx({
+        photo: [{ file_id: "photo_id", width: 800, height: 600 }],
+        caption: undefined,
+      });
+
+      await handlers["on:message:photo"](grammyCtx);
+
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).not.toContain("Caption:");
+    });
+
+    it("document handler uses original filename", async () => {
+      const grammyCtx = makeGrammyCtx({
+        document: {
+          file_id: "doc_id",
+          file_name: "report.pdf",
+          mime_type: "application/pdf",
+        },
+      });
+
+      await handlers["on:message:document"](grammyCtx);
+
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).toMatch(/\[Document sent to chat: media\/inbound\/.*report\.pdf\]/);
+    });
+
+    it("video handler sends Video label", async () => {
+      const grammyCtx = makeGrammyCtx({
+        video: { file_id: "vid_id", mime_type: "video/mp4", width: 1920, height: 1080, duration: 30 },
+      });
+
+      await handlers["on:message:video"](grammyCtx);
+
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).toMatch(/\[Video sent to chat: media\/inbound\/video-.*\.mp4\]/);
+    });
+
+    it("voice handler sends Voice message label", async () => {
+      const grammyCtx = makeGrammyCtx({
+        voice: { file_id: "voice_id", mime_type: "audio/ogg", duration: 5 },
+      });
+
+      await handlers["on:message:voice"](grammyCtx);
+
+      const promptCall = (ctx.promptStreaming as ReturnType<typeof vi.fn>).mock.calls[0] ??
+                         (ctx.prompt as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messageArg = promptCall[2] as string;
+      expect(messageArg).toMatch(/\[Voice message sent to chat: media\/inbound\/voice-.*\.ogg\]/);
+    });
+
+    it("steers active session instead of starting a new one for media", async () => {
+      (ctx.isSessionActive as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+      const grammyCtx = makeGrammyCtx({
+        photo: [{ file_id: "photo_id", width: 800, height: 600 }],
+        caption: "while you were running",
+      });
+
+      await handlers["on:message:photo"](grammyCtx);
+
+      expect(ctx.steerSession).toHaveBeenCalledWith(
+        "telegram:99",
+        expect.stringMatching(/\[Image sent to chat:.*\].*Caption: while you were running/s)
+      );
+      expect(ctx.promptStreaming).not.toHaveBeenCalled();
+      expect(ctx.prompt).not.toHaveBeenCalled();
     });
   });
 

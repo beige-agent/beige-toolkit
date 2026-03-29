@@ -10,9 +10,19 @@
  *   allowedUsers:  Array of allowed Telegram user IDs
  *   agentMapping:  { default: "agentName" }
  *   defaults:      { verbose?: boolean, streaming?: boolean }
+ *   workspaceDir:  (optional) Absolute host-side path to the agent workspace.
+ *                  When set, incoming media (photos, documents, audio, video,
+ *                  voice) are saved to <workspaceDir>/media/inbound/ and the
+ *                  agent receives a message with the sandbox-relative path.
+ *                  Defaults to <beigeDir>/agents/<defaultAgent>/workspace
+ *                  derived from the data directory.
  */
 
 import { Bot, type Context } from "grammy";
+import { createWriteStream, mkdirSync } from "fs";
+import { join, resolve, basename } from "path";
+import * as https from "https";
+import * as http from "http";
 import type {
   PluginInstance,
   PluginContext,
@@ -56,6 +66,8 @@ interface TelegramPluginConfig {
     verbose?: boolean;
     streaming?: boolean;
   };
+  /** Absolute host-side path to the agent workspace (e.g. /home/user/.beige/agents/beige/workspace). */
+  workspaceDir?: string;
 }
 
 // ── Session settings helpers ─────────────────────────────────────────────────
@@ -104,6 +116,92 @@ export function createPlugin(
   const allowedUserIds: number[] = cfg.allowedUsers.map((id) =>
     typeof id === "string" ? parseInt(id, 10) : id
   );
+
+  // ── Workspace / media-inbound helpers ─────────────────────────────────
+
+  /**
+   * Resolve the host-side workspace directory.
+   * Priority: explicit config.workspaceDir → derived from ctx.dataDir.
+   *
+   * ctx.dataDir is at <beigeDir>/data/telegram  (two levels above beigeDir).
+   * The default agent workspace lives at <beigeDir>/agents/<agentName>/workspace.
+   */
+  function resolveWorkspaceDir(): string {
+    if (cfg.workspaceDir) return cfg.workspaceDir;
+    // dataDir = <beigeDir>/data/telegram → go up two levels to get beigeDir
+    const beigeHome = resolve(ctx.dataDir, "../..");
+    const defaultAgent = cfg.agentMapping.default;
+    return join(beigeHome, "agents", defaultAgent, "workspace");
+  }
+
+  /**
+   * Download a Telegram file to <workspaceDir>/media/inbound/ and return
+   * the sandbox-relative path (media/inbound/<filename>).
+   *
+   * @param fileId   Telegram file_id
+   * @param filename Desired filename (with extension)
+   */
+  async function downloadMediaToInbound(fileId: string, filename: string): Promise<string> {
+    // 1. Ask Telegram for the download URL
+    const fileInfo = await bot.api.getFile(fileId);
+    const filePath = fileInfo.file_path;
+    if (!filePath) {
+      throw new Error(`Telegram returned no file_path for file_id: ${fileId}`);
+    }
+    const downloadUrl = `https://api.telegram.org/file/bot${cfg.token}/${filePath}`;
+
+    // 2. Ensure the inbound directory exists on the host
+    const workspaceDir = resolveWorkspaceDir();
+    const inboundDir = join(workspaceDir, "media", "inbound");
+    mkdirSync(inboundDir, { recursive: true });
+
+    // 3. Stream the file to disk
+    const destPath = join(inboundDir, filename);
+    await new Promise<void>((resolve, reject) => {
+      const file = createWriteStream(destPath);
+      const proto: typeof https | typeof http = downloadUrl.startsWith("https") ? https : http;
+      proto.get(downloadUrl, (res) => {
+        res.pipe(file);
+        file.on("finish", () => file.close(() => resolve()));
+        file.on("error", (err) => { file.close(); reject(err); });
+        res.on("error", reject);
+      }).on("error", reject);
+    });
+
+    // 4. Return sandbox-relative path
+    return `media/inbound/${filename}`;
+  }
+
+  /**
+   * Build a unique filename for an incoming media file.
+   * Format: <type>-<timestamp>.<ext>
+   */
+  function mediaFilename(type: string, ext: string): string {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").replace("Z", "");
+    return `${type}-${ts}.${ext}`;
+  }
+
+  /**
+   * Guess the file extension from a MIME type string.
+   */
+  function extFromMime(mimeType: string | undefined, fallback: string): string {
+    if (!mimeType) return fallback;
+    const map: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/jpg": "jpg",
+      "image/png": "png",
+      "image/gif": "gif",
+      "image/webp": "webp",
+      "video/mp4": "mp4",
+      "video/mpeg": "mpeg",
+      "audio/mpeg": "mp3",
+      "audio/ogg": "ogg",
+      "audio/mp4": "m4a",
+      "application/pdf": "pdf",
+      "text/plain": "txt",
+    };
+    return map[mimeType] ?? fallback;
+  }
 
   const bot = new Bot(cfg.token);
 
@@ -848,6 +946,119 @@ export function createPlugin(
     runSession(chatId, threadId, sessionKey, agentName, text, messageId)
       .catch((err) => ctx.log.error(`Unhandled session error [${sessionKey}]: ${err}`))
       .finally(() => pendingSessions.delete(sessionKey));
+  });
+
+  // ── Media message handlers ─────────────────────────────────────────────
+  //
+  // For each supported media type we:
+  //   1. Download the file to <workspaceDir>/media/inbound/
+  //   2. Build a text message describing what arrived (sandbox-relative path + caption)
+  //   3. Route that text message through the normal runSession() flow
+  //
+  // This means the LLM sees something like:
+  //   "[Image received: media/inbound/photo-2026-03-30_12-00-00.jpg]\nCaption: look at this"
+  // and can then read the file using its read/exec tools.
+
+  async function handleMediaMessage(
+    grammyCtx: Context,
+    fileId: string,
+    filename: string,
+    mediaLabel: string,
+    caption: string | undefined
+  ): Promise<void> {
+    const chatId = grammyCtx.chat!.id;
+    const threadId = grammyCtx.message?.message_thread_id;
+    const messageId = grammyCtx.message!.message_id;
+    const userId = grammyCtx.from!.id;
+    const sessionKey = telegramSessionKey(chatId, threadId);
+    const agentName = resolveAgent(userId, sessionKey);
+
+    ctx.log.info(
+      `User ${userId} sent ${mediaLabel} → agent '${agentName}' ` +
+        `(chat:${chatId}${threadId ? `/thread:${threadId}` : ""})`
+    );
+
+    setReaction(chatId, messageId, "👀");
+
+    let sandboxPath: string;
+    try {
+      sandboxPath = await downloadMediaToInbound(fileId, filename);
+    } catch (err) {
+      ctx.log.error(`Failed to download media: ${err}`);
+      setReaction(chatId, messageId, "😢");
+      await bot.api
+        .sendMessage(chatId, `❌ Failed to save ${mediaLabel}: ${err instanceof Error ? err.message : err}`, {
+          ...(threadId ? { message_thread_id: threadId } : {}),
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // Build the message text the agent will receive
+    let agentMessage = `[${mediaLabel} sent to chat: ${sandboxPath}]`;
+    if (caption?.trim()) {
+      agentMessage += `\nCaption: ${caption.trim()}`;
+    }
+
+    if (isActive(sessionKey)) {
+      ctx.log.info(`Steering active session with media: ${sessionKey}`);
+      await ctx.steerSession(sessionKey, agentMessage);
+      return;
+    }
+
+    pendingSessions.add(sessionKey);
+    await grammyCtx.replyWithChatAction("typing").catch(() => {});
+    runSession(chatId, threadId, sessionKey, agentName, agentMessage, messageId)
+      .catch((err) => ctx.log.error(`Unhandled session error [${sessionKey}]: ${err}`))
+      .finally(() => pendingSessions.delete(sessionKey));
+  }
+
+  // Photo handler — Telegram compresses photos; pick the largest available size
+  bot.on("message:photo", async (grammyCtx) => {
+    const photos = grammyCtx.message.photo; // array of PhotoSize, ascending by size
+    const photo = photos[photos.length - 1]; // largest
+    const filename = mediaFilename("photo", "jpg");
+    await handleMediaMessage(grammyCtx, photo.file_id, filename, "Image", grammyCtx.message.caption);
+  });
+
+  // Document handler — preserves original filename and type
+  bot.on("message:document", async (grammyCtx) => {
+    const doc = grammyCtx.message.document;
+    // Use original filename if available, otherwise generate one
+    const originalName = doc.file_name;
+    const ext = originalName
+      ? (originalName.includes(".") ? originalName.split(".").pop()! : extFromMime(doc.mime_type, "bin"))
+      : extFromMime(doc.mime_type, "bin");
+    const safeName = originalName
+      ? originalName.replace(/[^a-zA-Z0-9._-]/g, "_")
+      : mediaFilename("document", ext);
+    // Ensure uniqueness by prepending timestamp if using original name
+    const filename = originalName ? `${Date.now()}_${safeName}` : safeName;
+    await handleMediaMessage(grammyCtx, doc.file_id, filename, "Document", grammyCtx.message.caption);
+  });
+
+  // Video handler
+  bot.on("message:video", async (grammyCtx) => {
+    const video = grammyCtx.message.video;
+    const ext = extFromMime(video.mime_type, "mp4");
+    const filename = mediaFilename("video", ext);
+    await handleMediaMessage(grammyCtx, video.file_id, filename, "Video", grammyCtx.message.caption);
+  });
+
+  // Audio handler (music files)
+  bot.on("message:audio", async (grammyCtx) => {
+    const audio = grammyCtx.message.audio;
+    const ext = extFromMime(audio.mime_type, "mp3");
+    const filename = mediaFilename("audio", ext);
+    await handleMediaMessage(grammyCtx, audio.file_id, filename, "Audio", grammyCtx.message.caption);
+  });
+
+  // Voice handler (voice messages)
+  bot.on("message:voice", async (grammyCtx) => {
+    const voice = grammyCtx.message.voice;
+    const ext = extFromMime(voice.mime_type, "ogg");
+    const filename = mediaFilename("voice", ext);
+    await handleMediaMessage(grammyCtx, voice.file_id, filename, "Voice message", undefined);
   });
 
   // ── Channel adapter ────────────────────────────────────────────────────
