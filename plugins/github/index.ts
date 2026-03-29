@@ -1124,14 +1124,19 @@ export function createPlugin(
 
     let response: string | undefined;
 
-    // Always start a fresh session for each new notification batch.
-    // Each GitHub comment is a self-contained request — the full thread
-    // context is already included in combinedContext, so we don't need
-    // session history. This avoids issues with stale sessions and ensures
-    // every mention gets a response.
-    ctx.log.info(`Creating new session: ${sessionKey} (agent: ${agentName})`);
-    try {
+    // Reuse existing sessions so the agent retains context across multiple
+    // mentions on the same issue/PR. The session key is scoped to
+    // owner/repo + issue-or-PR number, so each thread gets its own
+    // persistent conversation. A new session is only created when none
+    // exists yet.
+    const existingSession = ctx.getSessionEntry(sessionKey);
+    if (existingSession) {
+      ctx.log.info(`Reusing existing session: ${sessionKey} (agent: ${agentName})`);
+    } else {
+      ctx.log.info(`Creating new session: ${sessionKey} (agent: ${agentName})`);
       await ctx.newSession(sessionKey, agentName);
+    }
+    try {
       response = await ctx.prompt(sessionKey, agentName, combinedContext);
       ctx.log.info(
         `Session ${sessionKey} completed. Response length: ${response?.length ?? 0} chars`
