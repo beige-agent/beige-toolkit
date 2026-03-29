@@ -1054,24 +1054,47 @@ export function createPlugin(
     number: string,
     body: string
   ): Promise<boolean> {
-    const result = await execGh([
-      "issue",
-      "comment",
-      number,
-      "--repo",
-      repo,
-      "--body",
-      body,
-    ]);
-
-    if (result.exitCode !== 0) {
+    let result: { stdout: string; stderr: string; exitCode: number };
+    try {
+      result = await execGh([
+        "issue",
+        "comment",
+        number,
+        "--repo",
+        repo,
+        "--body",
+        body,
+      ]);
+    } catch (err) {
       ctx.log.error(
-        `Failed to post comment on ${repo}#${number}: ${result.stderr}`
+        `Exception while posting comment on ${repo}#${number}: ${err}`
       );
       return false;
     }
 
-    ctx.log.info(`Posted comment on ${repo}#${number} (${body.length} chars)`);
+    if (result.exitCode !== 0) {
+      ctx.log.error(
+        `Failed to post comment on ${repo}#${number} (exit code ${result.exitCode}): stderr=${result.stderr}, stdout=${result.stdout}`
+      );
+      return false;
+    }
+
+    // Log full gh output so we can verify the comment was actually created.
+    // gh issue comment prints the comment URL on success — if stdout is empty
+    // or doesn't contain a URL, something may have gone wrong silently.
+    const stdout = result.stdout.trim();
+    const stderr = result.stderr.trim();
+    if (!stdout) {
+      ctx.log.warn(
+        `Posted comment on ${repo}#${number} (${body.length} chars) but gh returned empty stdout (stderr: ${stderr || "empty"}). Comment may not have been created.`
+      );
+    } else {
+      ctx.log.info(`Posted comment on ${repo}#${number} (${body.length} chars). gh output: ${stdout}`);
+    }
+    if (stderr) {
+      ctx.log.warn(`gh stderr while posting comment on ${repo}#${number}: ${stderr}`);
+    }
+
     return true;
   }
 
@@ -1124,11 +1147,28 @@ export function createPlugin(
       ctx.log.info(
         `Auto-posting response to ${commentTarget.repo}#${commentTarget.number}`
       );
-      await postComment(commentTarget.repo, commentTarget.number, response.trim());
+      try {
+        const posted = await postComment(commentTarget.repo, commentTarget.number, response.trim());
+        if (!posted) {
+          ctx.log.error(
+            `Auto-post FAILED for ${commentTarget.repo}#${commentTarget.number} — ` +
+            `the agent's response was NOT posted to GitHub. Session: ${sessionKey}`
+          );
+        }
+      } catch (err) {
+        ctx.log.error(
+          `Unhandled exception during auto-post for ${commentTarget.repo}#${commentTarget.number}: ${err}. ` +
+          `Session: ${sessionKey}. The agent's response was NOT posted to GitHub.`
+        );
+      }
     } else if (response && !commentTarget) {
       ctx.log.warn(
         `Session ${sessionKey} produced a response but no comment target could be ` +
         `extracted from the notification — response was NOT posted to GitHub.`
+      );
+    } else if (!response || !response.trim()) {
+      ctx.log.warn(
+        `Session ${sessionKey} produced no response (or empty response) — nothing to post to GitHub.`
       );
     }
   }
