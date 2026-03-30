@@ -2,25 +2,38 @@
  * Websearch Plugin for Beige Toolkit
  *
  * Multi-provider web search with:
- *   - Provider priority system (Tavily, Brave, Exa, WebSearchAPI)
- *   - Automatic fallback on failure
+ *   - Provider priority system (array order = priority)
+ *   - Automatic fallback (tries providers in order, stops on first success)
+ *   - In-memory caching with TTL
+ *   - Circuit breaker pattern (prevents cascading failures)
  *   - Local content extraction (Mozilla Readability)
  *   - AI-optimized output formats
- *   - Circuit breaker pattern
  *   - Request deduplication
- *   - In-memory caching
+ *   - Retry with exponential backoff
+ *
+ * Supports: Tavily, Brave (Exa and WebSearchAPI framework ready)
  *
  * Config (passed via pluginConfigs or plugins.websearch.config):
- *   providerPriority: Array of providers with weights (1=highest priority)
- *   fallbackBehavior: "try-all" | "fail-fast"
+ *   providerPriority: Array of providers (implicit array order = priority)
+ *   fallbackBehavior: "try-all" | "fail-fast" (default: "try-all")
  *   maxProvidersToTry: Max number of providers to attempt (default: 3)
- *   timeoutSeconds: Request timeout (default: 30)
+ *   timeoutSeconds: Request timeout in seconds (default: 30)
  *   maxResults: Default max results (default: 10)
  *   enableCache: Enable in-memory caching (default: true)
  *   cacheTTLSeconds: Cache TTL in seconds (default: 300)
  *   enableLocalExtraction: Use local extraction for providers without content (default: true)
+ *   extractionTimeout: Content extraction timeout in seconds (default: 15)
+ *   extractionMaxResults: Max number of results to extract content from (default: 3)
  *   defaultFormat: "readable" | "json" | "markdown" (default: "readable")
  *   aiOptimized: Output optimized for AI consumption (default: false)
+ *   maxRetries: Max retry attempts (default: 3)
+ *   retryDelayMs: Delay between retries in milliseconds (default: 1000)
+ *
+ * Environment Variables:
+ *   TAVILY_API_KEY, TAVILY_API_KEY_2: Tavily API keys
+ *   BRAVE_API_KEY: Brave Search API key
+ *   EXA_API_KEY: Exa API key
+ *   WEBSEARCHAPI_KEY: WebSearchAPI key
  */
 
 import type {
@@ -30,13 +43,29 @@ import type {
   ToolResult,
 } from "@matthias-hausberger/beige";
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────
 
 interface ProviderPriority {
   provider: string;
-  weight: number;
   enabled: boolean;
   apiKey?: string;
+}
+
+interface ProviderConfig {
+  name: string;
+  id: string;
+  apiKeyEnvVar: string;
+  supports: {
+    search: boolean;
+    answer: boolean;
+    extract: boolean;
+    content: boolean;
+    similar: boolean;
+    code: boolean;
+  };
+  maxResults: number;
+  freeTier: number;
+  paidRate?: string;
 }
 
 interface SearchResult {
@@ -65,24 +94,6 @@ interface ExtractedContent {
   extractedAt: string;
   wordCount: number;
   hasCodeBlocks: boolean;
-}
-
-interface AIReadableResult {
-  title: string;
-  content: string;
-  url: string;
-  provider: string;
-  timestamp: string;
-  age?: string;
-  publishedDate?: string;
-  contentLength: number;
-  hasCodeBlocks: boolean;
-  snippet: string;
-  sources?: Array<{
-    title: string;
-    url: string;
-    relevanceScore?: number;
-  }>;
 }
 
 enum SearchErrorType {
@@ -118,23 +129,6 @@ interface WebsearchConfig {
   aiOptimized?: boolean;
   maxRetries?: number;
   retryDelayMs?: number;
-}
-
-interface ProviderConfig {
-  name: string;
-  id: string;
-  apiKeyEnvVar: string;
-  supports: {
-    search: boolean;
-    answer: boolean;
-    extract: boolean;
-    content: boolean;
-    similar: boolean;
-    code: boolean;
-  };
-  maxResults: number;
-  freeTier: number;
-  paidRate?: string;
 }
 
 // ── Provider Registry ───────────────────────────────────────────────────────
@@ -204,9 +198,11 @@ class CircuitBreaker {
   private readonly resetTimeout = 60000; // 1 minute
 
   async execute<T>(fn: () => Promise<T>, provider: string): Promise<T> {
+    // Check if circuit is open and check reset timeout
     if (this.state === "open") {
       if (Date.now() - this.lastFailureTime < this.resetTimeout) {
-        throw new Error(`Circuit breaker is OPEN for ${provider}`);
+        // Circuit just opened, wait a bit before trying
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       this.state = "half-open";
     }
@@ -240,31 +236,43 @@ class CircuitBreaker {
     this.state = "closed";
     this.lastFailureTime = 0;
   }
+
+  // Get current state for monitoring
+  getState(): { state: string; failures: number; lastFailureTime: number; lastFailureAge: number } {
+    const lastFailureAge = this.lastFailureTime > 0 ? Date.now() - this.lastFailureTime : 0;
+    return {
+      state: this.state,
+      failures: this.failures,
+      lastFailureTime: this.lastFailureTime,
+      lastFailureAge: lastFailureAge
+    };
+  }
 }
 
 // ── Request Cache ────────────────────────────────────────────────────────────
 
 class RequestCache {
-  private cache = new Map<string, { results: any; timestamp: number }>();
+  private cache = new Map<string, { results: SearchResult[]; timestamp: number }>();
   private readonly ttl: number;
 
   constructor(ttlMs: number = DEFAULT_CACHE_TTL_MS) {
     this.ttl = ttlMs;
   }
 
-  get<T>(key: string): T | null {
+  get<T>(key: string): SearchResult[] | null {
     const entry = this.cache.get(key);
     if (!entry) return null;
 
+    // Check if cache entry is expired
     if (Date.now() - entry.timestamp > this.ttl) {
       this.cache.delete(key);
       return null;
     }
 
-    return entry.results as T;
+    return entry.results;
   }
 
-  set(key: string, results: any): void {
+  set(key: string, results: SearchResult[]): void {
     this.cache.set(key, { results, timestamp: Date.now() });
   }
 
@@ -273,7 +281,7 @@ class RequestCache {
   }
 }
 
-// ── Content Extraction ─────────────────────────────────────────────────────
+// ── Content Extraction ─────────────────────────────────────────────────────────────
 
 // Lazy load content extraction dependencies
 let readability: typeof import("@mozilla/readability").Readability | null = null;
@@ -338,7 +346,7 @@ async function extractContentLocal(
   };
 }
 
-// ── Plugin Entry Point ──────────────────────────────────────────────────────
+// ── Plugin Entry Point ──────────────────────────────────────────────────────────────
 
 export function createPlugin(
   config: Record<string, unknown>,
@@ -346,10 +354,10 @@ export function createPlugin(
 ): PluginInstance {
   const cfg = config as WebsearchConfig;
 
-  // Resolve provider priority
+  // Resolve provider priority - array order determines priority (index 0 = highest)
   const providerPriority: ProviderPriority[] = cfg.providerPriority || [
-    { provider: "tavily", weight: 1, enabled: true },
-    { provider: "brave", weight: 2, enabled: true },
+    { provider: "tavily", enabled: true },      // Implicit priority: 0 (highest)
+    { provider: "brave", enabled: true },       // Implicit priority: 1 (fallback)
   ];
 
   const fallbackBehavior = cfg.fallbackBehavior || "try-all";
@@ -369,7 +377,7 @@ export function createPlugin(
   // Circuit breakers for each provider
   const circuitBreakers = new Map<string, CircuitBreaker>();
 
-  // ── Provider implementations ─────────────────────────────────────────────
+  // ── Provider implementations ─────────────────────────────────────────────────────
 
   async function getApiKey(providerId: string, customKey?: string): string {
     const key = customKey || process.env[PROVIDERS[providerId].apiKeyEnvVar];
@@ -455,86 +463,12 @@ export function createPlugin(
         );
 
         results.forEach((r, i) => {
-          r.content = contents[i] ? contents[i].content : undefined;
+          r.content = contents[i] ? contents[i]!.content : undefined;
         });
       }
 
       return results;
     }, "brave");
-  }
-
-  async function searchWithFallback(query: string): Promise<SearchResult[]> {
-    // Check cache
-    const normalizedQuery = query.trim().toLowerCase();
-    if (enableCache) {
-      const cached = cache.get<SearchResult[]>(`search:${normalizedQuery}`);
-      if (cached) {
-        ctx.log.info(`🔄 Cache hit for: ${query}`);
-        return cached;
-      }
-    }
-
-    const enabledProviders = providerPriority
-      .filter((p) => p.enabled)
-      .sort((a, b) => a.weight - b.weight);
-
-    const errors: SearchError[] = [];
-
-    for (const { provider, weight } of enabledProviders.slice(0, maxProvidersToTry)) {
-      try {
-        const providerConfig = PROVIDERS[provider];
-        if (!providerConfig.supports.search) {
-          ctx.log.debug(`Provider ${provider} does not support search`);
-          continue;
-        }
-
-        let results: SearchResult[] = [];
-
-        switch (provider) {
-          case "tavily":
-            results = await searchTavily(query, { count: maxResults, content: enableLocalExtraction });
-            break;
-          case "brave":
-            results = await searchBrave(query, { count: maxResults, content: enableLocalExtraction });
-            break;
-          default:
-            ctx.log.debug(`Provider ${provider} not implemented yet`);
-            continue;
-        }
-
-        ctx.log.info(
-          `✅ Success with ${PROVIDERS[provider].name} (priority ${weight}): ${results.length} results`
-        );
-
-        // Cache successful results
-        if (enableCache) {
-          cache.set(`search:${normalizedQuery}`, results);
-        }
-
-        return results;
-      } catch (err) {
-        const searchErr = err as SearchError;
-        errors.push(searchErr);
-
-        ctx.log.warn(
-          `⚠️  ${PROVIDERS[provider].name} (priority ${weight}) failed: ${searchErr.type}` +
-            (searchErr.retryable ? " - retryable" : " - not retryable")
-        );
-
-        // Don't retry if error is not retryable
-        if (!searchErr.retryable) {
-          break;
-        }
-
-        if (fallbackBehavior === "fail-fast") {
-          break;
-        }
-      }
-    }
-
-    // All providers failed
-    ctx.log.error(`❌ All providers failed for query: ${query}`);
-    throw new AggregateSearchError("All search providers failed", errors);
   }
 
   async function answerTavily(query: string): Promise<AnswerResult> {
@@ -580,10 +514,13 @@ export function createPlugin(
       const text = await response.text().catch(() => "");
       throw new SearchError(
         `HTTP ${response.status}: ${response.statusText}\n${text}`,
-        response.status === 401 ? SearchErrorType.AUTH_FAILED :
-        response.status === 429 ? SearchErrorType.RATE_LIMITED :
-        response.status === 408 || response.status === 504 ? SearchErrorType.TIMEOUT :
-        SearchErrorType.NETWORK_ERROR,
+        response.status === 401
+          ? SearchErrorType.AUTH_FAILED
+          : response.status === 429
+            ? SearchErrorType.RATE_LIMITED
+            : response.status === 408 || response.status === 504
+              ? SearchErrorType.TIMEOUT
+              : SearchErrorType.NETWORK_ERROR,
         "unknown",
         response.status,
         text.slice(0, 200)
@@ -593,7 +530,7 @@ export function createPlugin(
     return response.json() as Promise<Record<string, unknown>>;
   }
 
-  // ── Output formatters ─────────────────────────────────────────────────
+  // ── Output formatters ─────────────────────────────────────────────────────
 
   function formatReadable(
     query: string,
@@ -648,18 +585,15 @@ export function createPlugin(
       {
         query,
         provider: metadata.provider,
-        providerPriority: providerPriority.filter((p) => p.enabled).map((p) => ({
-          provider: p.provider,
-          weight: p.weight,
-          enabled: p.enabled,
-        })),
         results: results.map((r) => ({
           title: r.title,
           url: r.url,
           snippet: r.snippet,
           content: r.content,
           age: r.age,
+          publishedDate: r.publishedDate,
           provider: r.provider,
+          relevanceScore: r.relevanceScore,
         })),
         totalResults: results.length,
         queryTime: metadata.queryTime,
@@ -707,7 +641,6 @@ export function createPlugin(
       lines.push(``);
       lines.push(r.snippet);
       if (r.content) {
-        lines.push(``);
         lines.push(`### Content`);
         lines.push(``);
         lines.push(r.content);
@@ -718,23 +651,110 @@ export function createPlugin(
     return lines.join("\n");
   }
 
-  // ── Tool handlers ───────────────────────────────────────────────────────
+  // ── Main search function ───────────────────────────────────────────────────
 
-  async function searchHandler(args: string[]): Promise<ToolResult> {
+  async function searchWithFallback(query: string): Promise<SearchResult[]> {
+    // Normalize query for caching
+    const normalizedQuery = query.trim().toLowerCase();
+
+    // Check cache
+    if (enableCache) {
+      const cached = cache.get<SearchResult[]>(`search:${normalizedQuery}`);
+      if (cached) {
+        ctx.log.info(`🔄 Cache hit for: ${query}`);
+        return cached;
+      }
+    }
+
+    // Sort providers by array order (no weight field needed)
+    const enabledProviders = providerPriority.filter((p) => p.enabled);
+
+    const errors: SearchError[] = [];
+
+    for (let i = 0; i < enabledProviders.length && i < maxProvidersToTry; i++) {
+      const providerId = enabledProviders[i].provider;
+      const providerConfig = PROVIDERS[providerId];
+
+      if (!providerConfig.supports.search) {
+        ctx.log.debug(`Provider ${providerId} does not support search`);
+        continue;
+      }
+
+      try {
+        let results: SearchResult[] = [];
+
+        switch (providerId) {
+          case "tavily":
+            results = await searchTavily(query, {
+              count: maxResults,
+              content: enableLocalExtraction,
+            });
+            break;
+          case "brave":
+            results = await searchBrave(query, {
+              count: maxResults,
+              content: enableLocalExtraction,
+            });
+            break;
+          default:
+            ctx.log.debug(`Provider ${providerId} not implemented yet`);
+            continue;
+        }
+
+        ctx.log.info(
+          `✅ Success with ${providerConfig.name} (priority ${i}): ${results.length} results`
+        );
+
+        // Cache successful results (negligible overhead: just Map.set())
+        if (enableCache) {
+          cache.set(`search:${normalizedQuery}`, results);
+        }
+
+        return results;
+      } catch (err) {
+        const searchErr = err as SearchError;
+        errors.push(searchErr);
+
+        ctx.log.warn(
+          `⚠️  ${providerConfig.name} (priority ${i}) failed: ${searchErr.type}` +
+            (searchErr.retryable ? " - retryable" : " - not retryable")
+        );
+
+        // Don't retry if error is not retryable
+        if (!searchErr.retryable) {
+          break;
+        }
+
+        // Check for fail-fast mode
+        if (fallbackBehavior === "fail-fast") {
+          break;
+        }
+      }
+    }
+
+    // All providers failed
+    ctx.log.error(`❌ All providers failed for query: ${query}`);
+    throw new AggregateSearchError("All search providers failed", errors);
+  }
+
+  // ── Tool handler ───────────────────────────────────────────────────────
+
+  async function handler(args: string[]): Promise<ToolResult> {
     const USAGE =
       "Usage:\n" +
       "  websearch search <query>                    — Search web (tries providers in priority order)\n" +
-      "  websearch search <query> --provider <name> — Use specific provider\n" +
-      "  websearch search <query> --count <n>       — Limit results (default: 10)\n" +
-      "  websearch search <query> --format <fmt>    — Format: readable, json, markdown\n" +
-      "  websearch answer <query>                    — Get AI-generated direct answer\n" +
-      "  websearch extract <url>                     — Extract content from URL\n" +
+      "  websearch search <query> --provider <name> — Use specific provider (tavily, brave)\n" +
+      "  websearch search <query> --count <n>             — Limit results (1-20, default: 10)\n" +
+      "  websearch search <query> --format <fmt>           — Format: readable, json, markdown\n" +
+      "  websearch answer <query>                    — Get AI-generated direct answer (Tavily)\n" +
+      "  websearch extract <url>                     — Extract content from URL (local)\n" +
       "\n" +
       "Environment variables:\n" +
-      "  TAVILY_API_KEY       — Tavily API key\n" +
-      "  BRAVE_API_KEY        — Brave API key\n" +
-      "  EXA_API_KEY          — Exa API key\n" +
-      "  WEBSEARCHAPI_KEY      — WebSearchAPI key";
+      "  TAVILY_API_KEY        — Tavily API key (primary)\n" +
+      "  TAVILY_API_KEY_2      — Tavily API key (backup)\n" +
+      "  BRAVE_API_KEY         — Brave API key (primary)\n" +
+      "  EXA_API_KEY           — Exa API key\n" +
+      "  WEBSEARCHAPI_KEY       — WebSearchAPI key";
 
     if (args.length === 0) {
       return { output: USAGE, exitCode: 1 };
@@ -748,17 +768,24 @@ export function createPlugin(
         let provider: string | undefined;
         let count: number | undefined;
         let format: string | undefined;
-        let queryWords: string[] = [];
 
         for (let i = 0; i < queryArgs.length; i++) {
           switch (queryArgs[i]) {
             case "--provider":
               provider = queryArgs[++i];
+              if (
+!["tavily", "brave", "exa", "websearchapi"].includes(provider || "")
+) {
+                return { output: `Error: Unknown provider: ${provider}`, exitCode: 1 };
+              }
               break;
             case "--count":
               count = parseInt(queryArgs[++i]);
               if (isNaN(count) || count < 1) {
                 return { output: "Error: --count must be a positive integer", exitCode: 1 };
+              }
+              if (count > 20) {
+                return { output: "Error: --count must be between 1 and 20", exitCode: 1 };
               }
               break;
             case "--format":
@@ -783,24 +810,16 @@ export function createPlugin(
 
         let results: SearchResult[];
         if (provider) {
-          // Use specific provider
-          const providerConfig = PROVIDERS[provider];
-          if (!providerConfig) {
+          // Use specific provider directly (bypass priority system)
+          if (
+!["tavily", "brave"].includes(provider)
+) {
             return { output: `Error: Unknown provider: ${provider}`, exitCode: 1 };
           }
 
-          switch (provider) {
-            case "tavily":
-              results = await searchTavily(query, { count: count || maxResults, content: enableLocalExtraction });
-              break;
-            case "brave":
-              results = await searchBrave(query, { count: count || maxResults, content: enableLocalExtraction });
-              break;
-            default:
-              return { output: `Error: Provider ${provider} not implemented yet`, exitCode: 1 };
-          }
+          results = await searchProvider(provider, query);
         } else {
-          // Use fallback
+          // Use priority system (array order determines priority)
           results = await searchWithFallback(query);
         }
 
@@ -824,7 +843,7 @@ export function createPlugin(
         const query = args.slice(1).join(" ");
         const startTime = Date.now();
 
-        // Try Tavily for answers
+        // Try Tavily for answers (currently Tavily-only)
         const result = await answerTavily(query);
 
         const queryTime = Date.now() - startTime;
@@ -864,25 +883,26 @@ export function createPlugin(
       reg.tool({
         name: "websearch",
         description:
-          "Multi-provider web search with provider priority, automatic fallback, " +
-          "local content extraction (Mozilla Readability), and AI-optimized output formats. " +
-          "Supports Tavily and Brave Search.",
+          "Multi-provider web search with provider priority (array order), automatic fallback, " +
+          "in-memory caching, local content extraction, and AI-optimized output formats. " +
+          "Supports Tavily and Brave. Provider priority: array order determines priority.",
         commands: [
           "search <query>                           — Search web (tries providers in priority order)",
           "search <query> --provider <name>         — Use specific provider (tavily, brave)",
-          "search <query> --count <n>               — Limit results (default: 10)",
+          "search <query> --count <n>             — Limit results (1-20, default: 10)",
           "search <query> --format <fmt>           — Format: readable, json, markdown",
           "answer <query>                            — Get AI-generated direct answer (Tavily)",
           "extract <url>                             — Extract content from URL (local)",
         ],
-        handler: searchHandler,
+        handler: handler as any,
       });
     },
 
     async start(): Promise<void> {
-      const configuredProviders = providerPriority.filter((p) => p.enabled).map((p) => PROVIDERS[p.provider].name);
+      const enabledProviders = providerPriority.filter((p) => p.enabled);
+
       ctx.log.info(
-        `Websearch plugin ready. Configured providers: ${configuredProviders.join(", ") || "none"}`
+        `Websearch plugin ready. Configured providers: ${enabledProviders.map((p) => PROVIDERS[p.provider].name).join(", ") || "none"}`
       );
     },
 
@@ -890,23 +910,14 @@ export function createPlugin(
       // Cleanup
       cache.clear();
       circuitBreakers.forEach((cb) => cb.reset());
+
+      ctx.log.info("Websearch plugin stopped");
     },
   };
 }
 
-// ── Custom error class ───────────────────────────────────────────────────────
+// ── Custom error class ────────────────────────────────────────────────────────
 
-class AggregateSearchError extends Error {
-  public readonly errors: SearchError[];
-
-  constructor(message: string, errors: SearchError[]) {
-    super(message);
-    this.name = "AggregateSearchError";
-    this.errors = errors;
-  }
-}
-
-// Make SearchError a proper Error class
 interface SearchErrorConstructor {
   new (message: string, type: SearchErrorType, provider: string, retryable: boolean, statusCode?: number, details?: string): SearchError;
 }
@@ -935,3 +946,15 @@ const SearchError: SearchErrorConstructor = class extends Error implements Searc
     this.details = details;
   }
 } as any;
+
+// ── Aggregate error class ─────────────────────────────────────────────────────
+
+class AggregateSearchError extends Error {
+  public readonly errors: SearchError[];
+
+  constructor(message: string, errors: SearchError[]) {
+    super(message);
+    this.name = "AggregateSearchError";
+    this.errors = errors;
+  }
+}
