@@ -203,6 +203,29 @@ export function createPlugin(
 
   const bot = new Bot(cfg.token);
 
+  // ── Global error boundary ──────────────────────────────────────────────
+  // Catches any error that bubbles out of grammY middleware (e.g. failed API
+  // calls, unexpected exceptions). Without this, such errors become unhandled
+  // rejections that crash the entire process.
+  bot.catch((err) => {
+    const errorDetail = err.error instanceof Error ? err.error.message : String(err.error);
+    ctx.log.error(`GrammY error boundary caught: ${errorDetail}`);
+
+    // Best-effort: notify the user that something went wrong.
+    // This may itself fail (e.g. TOPIC_CLOSED) — that's fine, we just log it.
+    const chatId = err.ctx?.chat?.id;
+    if (chatId) {
+      const threadId = err.ctx?.message?.message_thread_id;
+      bot.api
+        .sendMessage(chatId, `⚠️ An error occurred: ${errorDetail.slice(0, 3000)}`, {
+          ...(threadId ? { message_thread_id: threadId } : {}),
+        })
+        .catch((sendErr) => {
+          ctx.log.warn(`Failed to send error notification: ${sendErr}`);
+        });
+    }
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────
 
   function resolveAgent(userId: number, sessionKey?: string): string {
