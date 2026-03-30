@@ -1,0 +1,142 @@
+{
+  "name": "websearch",
+  "version": "1.0.0",
+  "description": "Multi-provider web search with provider priority, automatic fallback, and local content extraction",
+  "main": "index.ts",
+  "config": {
+    "type": "object",
+    "properties": {
+      "providerPriority": {
+        "type": "array",
+        "description": "Array of providers with weights (1=highest priority)",
+        "items": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["tavily", "brave", "exa", "websearchapi"],
+              "description": "Provider identifier"
+            },
+            "weight": {
+              "type": "number",
+              "description": "Priority weight (1=highest, higher numbers=lower priority)",
+              "minimum": 1
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether this provider is enabled"
+            },
+            "apiKey": {
+              "type": "string",
+              "description": "Optional override API key for this provider instance"
+            }
+          },
+          "required": ["provider", "weight", "enabled"]
+        }
+      },
+      "fallbackBehavior": {
+        "type": "string",
+        "enum": ["try-all", "fail-fast"],
+        "default": "try-all",
+        "description": "How to handle provider failures: 'try-all' continues to next provider, 'fail-fast' stops on first error"
+      },
+      "maxProvidersToTry": {
+        "type": "number",
+        "default": 3,
+        "minimum": 1,
+        "description": "Maximum number of providers to attempt before giving up"
+      },
+      "timeoutSeconds": {
+        "type": "number",
+        "default": 30,
+        "minimum": 1,
+        "description": "Request timeout in seconds"
+      },
+      "maxResults": {
+        "type": "number",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 20,
+        "description": "Default maximum number of results to return"
+      },
+      "enableCache": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable in-memory request caching"
+      },
+      "cacheTTLSeconds": {
+        "type": "number",
+        "default": 300,
+        "minimum": 0,
+        "description": "Cache time-to-live in seconds (default: 5 minutes)"
+      },
+      "enableLocalExtraction": {
+        "type": "boolean",
+        "default": true,
+        "description": "Use local content extraction for providers without built-in content"
+      },
+      "extractionTimeout": {
+        "type": "number",
+        "default": 15,
+        "minimum": 1,
+        "description": "Content extraction timeout in seconds"
+      },
+      "extractionMaxResults": {
+        "type": "number",
+        "default": 3,
+        "minimum": 1,
+        "description": "Maximum number of results to extract content from"
+      },
+      "defaultFormat": {
+        "type": "string",
+        "enum": ["readable", "json", "markdown"],
+        "default": "readable",
+        "description": "Default output format"
+      },
+      "aiOptimized": {
+        "type": "boolean",
+        "default": false,
+        "description": "Output optimized for AI consumption (JSON with metadata)"
+      },
+      "maxRetries": {
+        "type": "number",
+        "default": 3,
+        "minimum": 0,
+        "description": "Maximum retry attempts for failed requests"
+      },
+      "retryDelayMs": {
+        "type": "number",
+        "default": 1000,
+        "minimum": 0,
+        "description": "Delay between retries in milliseconds"
+      }
+    }
+  },
+  "environmentVariables": {
+    "TAVILY_API_KEY": {
+      "description": "Tavily Search API key (primary)",
+      "required": false
+    },
+    "TAVILY_API_KEY_2": {
+      "description": "Tavily Search API key (backup)",
+      "required": false
+    },
+    "BRAVE_API_KEY": {
+      "description": "Brave Search API key (primary)",
+      "required": false
+    },
+    "BRAVE_API_KEY_2": {
+      "description": "Brave Search API key (backup)",
+      "required": false
+    },
+    "EXA_API_KEY": {
+      "description": "Exa API key",
+      "required": false
+    },
+    "WEBSEARCHAPI_KEY": {
+      "description": "WebSearchAPI key",
+      "required": false
+    }
+  }
+}
