@@ -48,5 +48,10 @@
     "url": "https://github.com/matthias-hausberger/beige-toolkit/issues"
   },
   "homepage": "https://github.com/matthias-hausberger/beige-toolkit#readme",
-  "license": "MIT"
+  "license": "MIT",
+  "pnpm": {
+    "overrides": {
+      "@matthias-hausberger/beige": "link:../beige"
+    }
+  }
 }

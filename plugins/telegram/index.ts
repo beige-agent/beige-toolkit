@@ -665,6 +665,52 @@ export function createPlugin(
     ctx.log.info(`Manual compaction for session ${sessionKey}`);
   });
 
+  /**
+   * Determine the model selection state for display in /status and /model.
+   *
+   * Returns:
+   * - "default"  — using the agent's primary model, no override
+   * - "override" — user explicitly chose this model via /model
+   * - "fallback" — automatic fallback (rate limit / error), not user-chosen
+   * - undefined  — no session yet
+   */
+  function getModelState(
+    sessionKey: string,
+    agentName: string,
+    currentModel?: { provider: string; modelId: string }
+  ): "default" | "override" | "fallback" | undefined {
+    if (!currentModel) return undefined;
+
+    const agentCfg = (ctx.config as any).agents?.[agentName];
+    const primary = agentCfg?.model as { provider: string; model: string } | undefined;
+    if (!primary) return undefined;
+
+    const isPrimary =
+      currentModel.provider === primary.provider &&
+      currentModel.modelId === primary.model;
+
+    // Check if there's an explicit user override in session metadata
+    const entry = ctx.getSessionEntry(sessionKey);
+    const activeModel = entry?.metadata?.activeModel as
+      | { provider: string; modelId: string }
+      | undefined;
+
+    if (activeModel) {
+      return "override";
+    }
+
+    return isPrimary ? "default" : "fallback";
+  }
+
+  function modelStateLabel(state: "default" | "override" | "fallback" | undefined): string {
+    switch (state) {
+      case "default":  return " <i>(default)</i>";
+      case "override": return " <i>(override — /model reset to revert)</i>";
+      case "fallback": return " <i>(fallback — automatic)</i>";
+      default:         return "";
+    }
+  }
+
   // /status command
   bot.command("status", async (grammyCtx) => {
     const chatId = grammyCtx.chat.id;
@@ -685,9 +731,11 @@ export function createPlugin(
 
     if (modelRef) {
       const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
+      const state = getModelState(sessionKey, agentName, modelRef);
+      const stateTag = modelStateLabel(state);
       modelLine = modelInfo
-        ? `<code>${escapeHtml(modelInfo.name)}</code>`
-        : `<code>${escapeHtml(`${modelRef.provider}/${modelRef.modelId}`)}</code>`;
+        ? `<code>${escapeHtml(modelInfo.name)}</code>${stateTag}`
+        : `<code>${escapeHtml(`${modelRef.provider}/${modelRef.modelId}`)}</code>${stateTag}`;
 
       if (usage && modelInfo) {
         const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
@@ -792,13 +840,15 @@ export function createPlugin(
       const agentCfg = (ctx.config as any).agents?.[agentName];
       const primary = agentCfg?.model;
       const fallbacks: Array<{ provider: string; model: string }> = agentCfg?.fallbackModels ?? [];
+      const state = currentModel ? getModelState(sessionKey, agentName, currentModel) : undefined;
+      const stateTag = state ? ` ${modelStateLabel(state).trim()}` : "";
 
       const modelLine = (m: { provider: string; model: string }): string => {
         const key = `${m.provider}/${m.model}`;
         const isCurrent =
           currentModel?.provider === m.provider && currentModel?.modelId === m.model;
         return isCurrent
-          ? `• <b>${escapeHtml(key)}</b> ← current`
+          ? `• <b>${escapeHtml(key)}</b> ← current${stateTag}`
           : `• ${escapeHtml(key)}`;
       };
 
@@ -836,7 +886,13 @@ export function createPlugin(
       await ctx.abortSession(sessionKey);
       await ctx.disposeSession(sessionKey);
 
+      // Clear health/cooldown state for the primary model so it's retried fresh
+      // instead of being skipped due to stale rate-limit data.
       const agentCfg = (ctx.config as any).agents?.[agentName];
+      if (agentCfg?.model) {
+        ctx.clearModelHealth(agentCfg.model.provider, agentCfg.model.model);
+      }
+
       const primaryModel = agentCfg?.model
         ? `<code>${escapeHtml(`${agentCfg.model.provider}/${agentCfg.model.model}`)}</code>`
         : "<i>default</i>";
@@ -1311,6 +1367,38 @@ export function createPlugin(
           "sendPhoto <chatId> --thread <id> <photoPath> [caption] — Send photo to thread",
         ],
         handler: telegramToolHandler,
+      });
+
+      // Subscribe to model switch events so the user is notified when fallback occurs
+      reg.hook("modelSwitched", async (event) => {
+        // Only notify for Telegram sessions
+        if (!event.sessionKey.startsWith("telegram:")) return;
+
+        const parts = event.sessionKey.split(":");
+        const chatId = parts[1];
+        const threadId = parts[2]; // may be undefined
+
+        const reasonLabels: Record<string, string> = {
+          fallback_rate_limit: "⏳ Rate limit on primary model",
+          fallback_error: "⚠️ Error on primary model",
+          fallback_timeout: "⏰ Primary model timed out",
+          user_override: "👤 Manual model switch",
+        };
+        const reasonText = reasonLabels[event.reason] ?? event.reason;
+        const from = `${event.previousModel.provider}/${event.previousModel.modelId}`;
+        const to = `${event.newModel.provider}/${event.newModel.modelId}`;
+
+        const message =
+          `🔄 <b>Model switched</b>\n\n` +
+          `${reasonText}\n` +
+          `From: <code>${escapeHtml(from)}</code>\n` +
+          `To: <code>${escapeHtml(to)}</code>`;
+
+        try {
+          await channelAdapter.sendMessage(chatId, threadId, message, { parseMode: "html" });
+        } catch (err) {
+          ctx.log.warn(`Failed to send model switch notification: ${err}`);
+        }
       });
     },
 
