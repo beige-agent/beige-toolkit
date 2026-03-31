@@ -85,6 +85,10 @@ Schedule files are stored as individual JSON files at `storagePath/schedules/<id
 
 A run history record is written to `storagePath/history/` after every execution, regardless of success or failure. The tick loop also fires once at gateway startup to catch any schedules that became due while the gateway was offline.
 
+### Concurrency
+
+Different schedules run **in parallel** — a slow schedule A will never block schedule B from firing on time. However, each individual schedule can only have **one execution in flight at a time**. If a schedule's previous execution is still running when the next tick finds it due again, that window is simply skipped (no catch-up). This prevents resource exhaustion from a single schedule while keeping independent schedules responsive.
+
 ## Storage Layout
 
 ```

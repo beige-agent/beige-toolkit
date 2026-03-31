@@ -825,12 +825,15 @@ async function executeSchedule(
 /**
  * One tick of the background loop.
  * Loads all active schedules, fires any that are due, saves updated entries.
+ * Different schedules run in parallel, but each individual schedule can only
+ * have one execution in flight at a time (tracked via runningSchedules).
  */
 export async function runTick(
   storage: ReturnType<typeof makeStorage>,
   cfg: ScheduleConfig,
   deps: Required<ScheduleDeps>,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  runningSchedules: Set<string> = new Set()
 ): Promise<void> {
   const now = deps.now();
   const all = storage.listAllSchedules();
@@ -838,10 +841,31 @@ export async function runTick(
     (e) => e.status === "active" && e.nextRun !== null && new Date(e.nextRun) <= now
   );
 
-  for (const entry of due) {
-    const record = await executeSchedule(entry, cfg, deps, log);
-    storage.saveSchedule(entry); // persists updated status / nextRun
-    storage.appendHistory(record);
+  const results = await Promise.allSettled(
+    due.map(async (entry) => {
+      // Per-schedule concurrency guard: skip if this schedule is already running.
+      // The missed window is simply skipped (no catch-up).
+      if (runningSchedules.has(entry.id)) {
+        log(`schedule ${entry.id} skipped (previous execution still running)`);
+        return;
+      }
+      runningSchedules.add(entry.id);
+      try {
+        const record = await executeSchedule(entry, cfg, deps, log);
+        storage.saveSchedule(entry); // persists updated status / nextRun
+        storage.appendHistory(record);
+      } finally {
+        runningSchedules.delete(entry.id);
+      }
+    })
+  );
+
+  // Log any unexpected errors (executeSchedule already handles action errors,
+  // so these would be storage/serialisation failures)
+  for (const r of results) {
+    if (r.status === "rejected") {
+      log(`schedule tick: unexpected error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+    }
   }
 }
 
@@ -1270,7 +1294,8 @@ export function createTickFn(
 ): () => Promise<void> {
   const storagePath = resolveStoragePath(cfg);
   const storage = makeStorage(storagePath, deps.fs);
-  return () => runTick(storage, cfg, deps, log);
+  const runningSchedules = new Set<string>();
+  return () => runTick(storage, cfg, deps, log, runningSchedules);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1320,7 +1345,7 @@ export function createPlugin(
   const handler = createHandler(handlerCfg, resolvedDeps);
 
   let tickInterval: ReturnType<typeof setInterval> | null = null;
-  let tickRunning = false;
+  const runningSchedules = new Set<string>();
 
   return {
     register(reg: PluginRegistrar): void {
@@ -1338,26 +1363,16 @@ export function createPlugin(
 
       // Run once at startup to catch any schedules that fired while the gateway was down
       try {
-        await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg));
+        await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg), runningSchedules);
       } catch (err) {
         ctx.log.error(`schedule: startup tick failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       tickInterval = setInterval(async () => {
-        // Concurrency guard: skip this tick if the previous one is still running.
-        // This prevents runaway parallel executions when a prompt/exec takes
-        // longer than tickInterval (the root cause of the "every 15 seconds" bug).
-        if (tickRunning) {
-          ctx.log.info("schedule: tick skipped (previous tick still running)");
-          return;
-        }
-        tickRunning = true;
         try {
-          await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg));
+          await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg), runningSchedules);
         } catch (err) {
           ctx.log.error(`schedule: tick error: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          tickRunning = false;
         }
       }, intervalSec * 1000);
     },
