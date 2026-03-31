@@ -164,10 +164,10 @@ export interface ScheduleConfig {
   /** Max active schedules per agent. Default: 20 */
   maxSchedulesPerAgent?: number;
   /**
-   * Max consecutive errors before a schedule is automatically paused.
-   * 0 = pause on first error (no retries). Default: 0
+   * Max consecutive failures before a schedule is automatically marked as failed.
+   * -1 = infinite (never auto-fail). 0 = fail on first error. Default: -1
    */
-  maxConsecutiveErrors?: number;
+  maxConsecutiveFailures?: number;
 }
 
 // ── Dependency interfaces (for testing) ───────────────────────────────────────
@@ -766,11 +766,11 @@ async function executeSchedule(
   // Track consecutive errors and auto-pause when threshold is exceeded
   if (status === "error") {
     entry.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
-    const maxConsecErrors = cfg.maxConsecutiveErrors ?? 0;
-    if (entry.consecutiveErrors > maxConsecErrors) {
+    const maxConsecFailures = cfg.maxConsecutiveFailures ?? -1;
+    if (maxConsecFailures !== -1 && entry.consecutiveErrors > maxConsecFailures) {
       entry.status = "failed";
       entry.nextRun = null;
-      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveErrors: ${maxConsecErrors})`);
+      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveFailures: ${maxConsecFailures})`);
 
       return {
         scheduleId: entry.id,
