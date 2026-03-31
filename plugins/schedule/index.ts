@@ -436,8 +436,14 @@ interface ParsedCreate {
 }
 
 interface ParsedIdCommand {
-  subcommand: "get" | "cancel" | "pause" | "resume" | "test";
+  subcommand: "get" | "cancel" | "pause" | "test";
   id: string;
+}
+
+interface ParsedResume {
+  subcommand: "resume";
+  id: string;
+  once?: string; // optional new one-off timestamp (ISO8601)
 }
 
 interface ParsedList {
@@ -547,11 +553,23 @@ export function parseArgs(args: string[]): ParsedArgs {
     return result;
   }
 
+  // ── resume (supports optional --once) ──────────────────────────────────────
+  if (sub === "resume") {
+    if (!rest[0]) return { subcommand: null, error: "resume requires <id>" };
+    const result: ParsedResume = { subcommand: "resume", id: rest[0] };
+    let i = 1;
+    while (i < rest.length) {
+      if (rest[i] === "--once") result.once = rest[++i];
+      i++;
+    }
+    return result;
+  }
+
   // ── single-id commands ────────────────────────────────────────────────────
-  const idCommands: Subcommand[] = ["get", "cancel", "pause", "resume", "test"];
+  const idCommands: Subcommand[] = ["get", "cancel", "pause", "test"];
   if (idCommands.includes(sub as Subcommand)) {
     if (!rest[0]) return { subcommand: null, error: `${sub} requires <id>` };
-    return { subcommand: sub as "get" | "cancel" | "pause" | "resume" | "test", id: rest[0] };
+    return { subcommand: sub as "get" | "cancel" | "pause" | "test", id: rest[0] };
   }
 
   return { subcommand: null, error: `unknown subcommand '${sub}'` };
@@ -578,7 +596,7 @@ function usageText(): string {
     "  get     <id>",
     "  cancel  <id>",
     "  pause   <id>",
-    "  resume  <id>",
+    "  resume  <id>  [--once <ISO8601>]",
     "  history <id>  [--limit <n>]  [--format json]",
     "  test    <id>    — trigger immediately regardless of nextRun",
     "",
@@ -1097,24 +1115,53 @@ function handlePause(
 }
 
 function handleResume(
-  id: string,
+  parsed: ParsedResume,
   callerAgent: string,
   storage: ReturnType<typeof makeStorage>,
   deps: Required<ScheduleDeps>,
   cfg: ScheduleConfig
 ): { output: string; exitCode: number } {
+  const { id } = parsed;
   const entry = storage.loadSchedule(id);
   if (!entry) return { output: `Error: schedule '${id}' not found.`, exitCode: 1 };
   if (entry.createdBy !== callerAgent) return { output: `Error: schedule '${id}' does not belong to you.`, exitCode: 1 };
-  if (entry.status !== "paused") return { output: `Error: schedule '${id}' is ${entry.status} — only paused schedules can be resumed.`, exitCode: 1 };
+  if (entry.status === "active") return { output: `Error: schedule '${id}' is already active.`, exitCode: 1 };
+  if (entry.status === "completed") return { output: `Error: schedule '${id}' is completed — completed schedules cannot be resumed.`, exitCode: 1 };
 
-  // Re-compute nextRun in case it has drifted while paused
+  // Optional --once flag: update the trigger time for one-off schedules
+  if (parsed.once) {
+    if (entry.trigger.type !== "once") {
+      return { output: `Error: --once can only be used with one-off schedules, but '${id}' is a cron schedule.`, exitCode: 1 };
+    }
+    const newTime = new Date(parsed.once);
+    if (isNaN(newTime.getTime())) {
+      return { output: `Error: invalid datetime '${parsed.once}'.`, exitCode: 1 };
+    }
+    if (newTime <= deps.now()) {
+      return { output: `Error: datetime '${parsed.once}' is in the past.`, exitCode: 1 };
+    }
+    entry.trigger.datetime = newTime.toISOString();
+  }
+
+  // Re-compute nextRun
   if (entry.trigger.type === "cron") {
     const next = getNextCronRun(entry.trigger.expression, entry.trigger.timezone, deps.now());
     if (!next) {
       return { output: `Error: cron expression "${entry.trigger.expression}" produces no future runs.`, exitCode: 1 };
     }
     entry.nextRun = next.toISOString();
+  } else {
+    // One-off: use the (possibly updated) trigger time
+    const triggerTime = new Date(entry.trigger.datetime);
+    if (triggerTime <= deps.now()) {
+      return { output: `Error: schedule '${id}' is a one-off whose trigger time has already passed. Use --once <ISO8601> to set a new time.`, exitCode: 1 };
+    }
+    entry.nextRun = entry.trigger.datetime;
+  }
+
+  // Reset consecutive error counter when resuming from failed state
+  if (entry.status === "failed") {
+    entry.consecutiveErrors = 0;
   }
 
   entry.status = "active";
@@ -1265,7 +1312,7 @@ export function createHandler(
         return handlePause(parsed.id, callerAgent, storage);
 
       case "resume":
-        return handleResume(parsed.id, callerAgent, storage, resolvedDeps, cfg);
+        return handleResume(parsed as ParsedResume, callerAgent, storage, resolvedDeps, cfg);
 
       case "history":
         return handleHistory(parsed.id, callerAgent, parsed, storage);

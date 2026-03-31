@@ -64,7 +64,7 @@ No external dependencies beyond `cron-parser` (bundled). Requires beige ≥ 0.1.
 | `get <id>` | Show full details for a schedule. |
 | `cancel <id>` | Cancel an active or paused schedule. |
 | `pause <id>` | Pause an active cron schedule without cancelling it. |
-| `resume <id>` | Resume a paused schedule, re-computing the next run time. |
+| `resume <id> [--once <ISO8601>]` | Resume a paused, failed, or cancelled schedule, re-computing the next run time. Resets the consecutive error counter for failed schedules. For one-off schedules whose trigger time has passed, use `--once <ISO8601>` to set a new future trigger time. |
 | `history <id> [--limit <n>] [--format json]` | Show run history for a schedule. |
 | `test <id>` | Trigger a schedule immediately without affecting its state (runCount, status, nextRun are preserved). |
 
