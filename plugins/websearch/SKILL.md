@@ -450,34 +450,6 @@ URL → Fetch (browser headers) → HTML → JSDOM → Readability → Turndown 
 - Only retry retryable errors
 - Circuit breaker prevents retry storms
 
-## Comparison: This Plugin vs Juan's websearch
-
-| Feature | Juan's websearch | This Plugin |
-|---------|-------------------|---------------|
-| Multi-provider | ✅ Yes (5 providers) | ✅ Yes (4 providers) |
-| Priority system | ❌ No (manual -p flag) | ✅ Yes (weight-based) |
-| Automatic fallback | ❌ No | ✅ Yes (configurable) |
-| Circuit breaker | ❌ No | ✅ Yes |
-| Local extraction | ✅ Yes (Readability) | ✅ Yes (Readability) |
-| Error handling | ⚠️ Basic | ✅ Advanced (retries, CB) |
-| Caching | ❌ No | ✅ Yes (in-memory) |
-| Deduplication | ❌ No | ✅ Yes |
-| Tavily Search | ✅ Yes | ✅ Yes |
-| Tavily Answer | ✅ Yes | ✅ Yes |
-| Brave Search | ✅ Yes | ✅ Yes |
-| AI-optimized output | ❌ No | ✅ Yes (JSON + metadata) |
-| Provider health tracking | ❌ No | ✅ Yes |
-| Rate limit awareness | ❌ No | ✅ Yes |
-| Command-line tool | ✅ Yes | ❌ No (agent plugin) |
-
-**Key improvements over Juan's websearch**:
-1. Automatic fallback vs manual provider selection
-2. Circuit breaker prevents cascading failures
-3. In-memory caching reduces API usage
-4. AI-optimized JSON format for direct consumption
-5. Retry with exponential backoff for transient errors
-6. Provider health tracking and rate limit awareness
-
 ## Best Practices
 
 ### Choose the Right Provider
@@ -717,25 +689,6 @@ const config = {
   }
 };
 ```
-
-## Migration from Juan's websearch
-
-If you're currently using Juan's websearch CLI:
-
-**Command mapping**:
-
-| Juan's websearch | This plugin |
-|------------------|---------------|
-| `websearch search "query" -p tavily` | `websearch search "query" --provider tavily` |
-| `websearch search "query" --content` | `websearch search "query"` (auto extracts) |
-| `websearch answer "query"` | `websearch answer "query"` |
-| `websearch extract "url"` | `websearch extract "url"` |
-
-**Key differences**:
-1. This plugin uses `--provider` instead of `-p`
-2. This plugin supports `--format` for output
-3. This plugin has automatic fallback (no manual switching needed)
-4. This plugin is a Beige plugin (not a CLI tool)
 
 ## Future Enhancements
 
