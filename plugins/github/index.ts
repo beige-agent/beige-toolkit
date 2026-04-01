@@ -62,18 +62,56 @@ export function extractCleanResponse(response: string): string {
 
   const trimmed = response.trim();
 
-  // Pattern 1: "Now let me respond to X:" or "Now let me respond:" - extract everything after this
-  const responseMarkerRegex = /Now let me respond to .+?:|Now let me respond:/i;
-  const markerMatch = trimmed.match(responseMarkerRegex);
-  if (markerMatch) {
-    const afterMarker = trimmed.slice(markerMatch.index! + markerMatch[0].length).trim();
+  // --------------------------------------------------------------------------
+  // Pattern 1: Explicit response markers — highest priority
+  // --------------------------------------------------------------------------
+
+  // Pattern 1a: "Now let me respond to X:" - handle various formats
+  // Matches: "Now let me respond to Matthias:", "Now let me respond:", etc.
+  const respondToRegex = /Now\s+let\s+me\s+respond\s+(?:to\s+\S+)?:/i;
+  const respondToMatch = trimmed.match(respondToRegex);
+  if (respondToMatch) {
+    const afterMarker = trimmed.slice(respondToMatch.index! + respondToMatch[0].length).trim();
     if (afterMarker) {
       return afterMarker;
     }
   }
 
-  // Pattern 2: "---\n## Response" or similar section headers
-  const sectionRegex = /---\s*\n##\s*(Response|Final Response|Comment)/i;
+  // Pattern 1b: "Let me respond to X:" - shorter variant
+  const letRespondRegex = /Let\s+me\s+respond\s+(?:to\s+\S+)?:/i;
+  const letRespondMatch = trimmed.match(letRespondRegex);
+  if (letRespondMatch) {
+    const afterMarker = trimmed.slice(letRespondMatch.index! + letRespondMatch[0].length).trim();
+    if (afterMarker) {
+      return afterMarker;
+    }
+  }
+
+  // Pattern 1c: "Now let me respond:" - without username
+  const respondRegex = /Now\s+let\s+me\s+respond\s*:/i;
+  const respondMatch = trimmed.match(respondRegex);
+  if (respondMatch) {
+    const afterMarker = trimmed.slice(respondMatch.index! + respondMatch[0].length).trim();
+    if (afterMarker) {
+      return afterMarker;
+    }
+  }
+
+  // Pattern 1d: "Here is my response:" / "Here's my response:"
+  const hereIsResponseRegex = /Here(?:'s| is)\s+my\s+response\s*:/i;
+  const hereIsResponseMatch = trimmed.match(hereIsResponseRegex);
+  if (hereIsResponseMatch) {
+    const afterMarker = trimmed.slice(hereIsResponseMatch.index! + hereIsResponseMatch[0].length).trim();
+    if (afterMarker) {
+      return afterMarker;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Pattern 2: Section headers (---\n## Response)
+  // --------------------------------------------------------------------------
+
+  const sectionRegex = /-{3,}\s*\n##\s*(Response|Final Response|Comment)/i;
   const sectionMatch = trimmed.match(sectionRegex);
   if (sectionMatch) {
     const afterSection = trimmed.slice(sectionMatch.index! + sectionMatch[0].length).trim();
@@ -82,29 +120,52 @@ export function extractCleanResponse(response: string): string {
     }
   }
 
-  // Pattern 3: Look for the last substantial paragraph
-  // Split by double newlines and take the last non-empty paragraph
-  const paragraphs = trimmed.split(/\n\n+/).filter(p => p.trim().length > 20);
+  // --------------------------------------------------------------------------
+  // Pattern 3: Multi-paragraph heuristic — extract last paragraph
+  // --------------------------------------------------------------------------
+  // This handles cases where analysis spans multiple paragraphs followed by
+  // a clean response (without explicit marker).
+
+  const paragraphs = trimmed.split(/\n\n+/).filter(p => p.trim().length > 10);
+
   if (paragraphs.length > 1) {
-    // If there are multiple paragraphs, the last one is likely the clean response
     const lastParagraph = paragraphs[paragraphs.length - 1].trim();
-    // Check if the second-to-last paragraph looks like internal reasoning
-    // (short, starts with "Now", "Great", "Perfect", etc.)
-    if (paragraphs.length >= 2) {
-      const prevParagraph = paragraphs[paragraphs.length - 2].trim();
-      const internalReasoningPrefixes = [
-        /^(Now|Great|Perfect|Excellent|Good|OK)/i,
-        /let me respond/i,
-        /here's my response/i,
-      ];
-      if (internalReasoningPrefixes.some(prefix => prefix.test(prevParagraph))) {
+
+    // Check if ANY previous paragraph looks like internal reasoning
+    // Patterns that suggest analysis:
+    // - Starts with "Excellent!", "Great!", "Perfect!" etc.
+    // - Contains phrases like "This is a", "The fix includes"
+    // - Ends with "Now let me respond" or similar
+    const internalReasoningPatterns = [
+      /^(Now|Great|Perfect|Excellent|Good|OK|Awesome|Nice)\b/i,  // Positive opener
+      /let me respond\b/i,
+      /here'?s my response\b/i,
+      /^this is (a|the|an)\s+(?:straightforward|simple|minimal|comprehensive|good|clean)\s+(?:fix|change|improvement)/i,  // Start of paragraph
+      /^(the fix|this change|this implementation) (includes|provides|addresses|adds|removes)/i,
+      /looking at (the|this) (code|fix|change|PR|issue)/i,
+      /i'?ve (reviewed|analyzed|checked|examined) (the|this)/i,
+    ];
+
+    // Check all previous paragraphs (not just the immediate one)
+    for (let i = 0; i < paragraphs.length - 1; i++) {
+      const prevParagraph = paragraphs[i].trim();
+
+      // Strong indicators: contains "let me respond" explicitly
+      if (/(let me respond|here'?s my response|now let me respond)/i.test(prevParagraph)) {
+        return lastParagraph;
+      }
+
+      // Moderate indicators: matches internal reasoning patterns
+      if (internalReasoningPatterns.some(pattern => pattern.test(prevParagraph))) {
         return lastParagraph;
       }
     }
   }
 
+  // --------------------------------------------------------------------------
   // No pattern found - return the original response
-  // It may already be clean, or we couldn't parse it
+  // --------------------------------------------------------------------------
+  // It may already be clean, or we couldn't parse it.
   return trimmed;
 }
 
