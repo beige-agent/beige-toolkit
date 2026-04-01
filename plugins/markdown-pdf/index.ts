@@ -20,8 +20,8 @@
  * are supported.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { resolve, dirname, basename, join, isAbsolute } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve, dirname, basename, join, isAbsolute } from "node:path";
 import type {
   PluginInstance,
   PluginContext,
