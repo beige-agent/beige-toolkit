@@ -100,23 +100,8 @@ beige tools install github:matthias-hausberger/beige-toolkit
         "providerPriority": [
           { "provider": "tavily", "enabled": true }
         ],
-      }
-    }
-  },
-  "env": {
-    "TAVILY_API_KEY": "your_primary_key"
-  }
-}
-```
-
-```json5
-{
-  "plugins": {
-    "websearch": {
-      "config": {
-        "providerPriority": [
-          { "provider": "tavily", "enabled": true }
-        ],
+        "enableCache": true,
+        "cacheTTLSeconds": 600
       }
     }
   },
@@ -135,26 +120,14 @@ beige tools install github:matthias-hausberger/beige-toolkit
       "config": {
         "providerPriority": [
           { "provider": "tavily", "enabled": true }
-        ]
+        ],
+        "defaultFormat": "json",
+        "aiOptimized": true
       }
     }
   },
   "env": {
     "TAVILY_API_KEY": "your_key_here"
-  }
-}
-```
-
-```json5
-{
-  "plugins": {
-    "websearch": {
-      "config": {
-        "providerPriority": [
-          { "provider": "tavily", "enabled": true }
-        ]
-      }
-    }
   }
 }
 ```
@@ -288,34 +261,6 @@ URL → Fetch (browser headers) → HTML → JSDOM → Readability → Turndown 
 - ✅ **Multiple output formats**: Human-readable, JSON, Markdown
 - ✅ **AI-optimized output**: JSON format with rich metadata for direct LLM consumption
 - ✅ **Detailed error handling**: 6 error types, retry detection, provider health tracking
-
-## Comparison: This Plugin vs Juan's websearch CLI
-
-| Feature | Juan's websearch CLI | This Plugin (Beige) |
-|---------|-------------------|-------------|
-| **Multi-provider** | ✅ Yes (5 providers) | ⚠️ Yes (2 implemented, 2 planned) |
-| **Priority system** | ❌ No (manual `-p` flag) | ✅ Yes (array order) |
-| **Automatic fallback** | ❌ No (manual switching) | ✅ Yes (configurable: try-all/fail-fast) |
-| **Circuit breaker** | ❌ No | ✅ Yes (per-provider) |
-| **Local extraction** | ✅ Yes (Readability) | ✅ Yes (Readability) |
-| **Error handling** | ⚠️ Basic | ✅ Advanced (retries, types, health tracking) |
-| **Caching** | ❌ No | ✅ Yes (in-memory, TTL) |
-| **Deduplication** | ❌ No | ✅ Yes |
-| **Retry with backoff** | ❌ No | ✅ Yes (exponential) |
-| **AI-optimized output** | ❌ No | ✅ Yes (JSON + metadata) |
-| **Provider health tracking** | ❌ No | ✅ Yes (circuit breaker state) |
-| **Rate limit awareness** | ❌ No | ✅ Yes (error type detection) |
-| **Command-line tool** | ✅ Yes | ❌ No (agent plugin) |
-| **Beige integration** | ❌ No | ✅ Native plugin |
-
-**Key advantages over Juan's CLI**:
-1. **Simpler configuration**: Array order = priority (no "weight" numbers to explain)
-2. **Automatic fallback**: No manual provider switching needed
-3. **Circuit breaker**: Prevents provider outages from causing total failure
-4. **Caching**: Reduces API costs and improves performance (50-90% savings for repeated queries)
-5. **AI-optimized JSON format**: Ready for direct LLM consumption with metadata
-6. **Better error handling**: Detailed error types, intelligent retry detection
-7. **Provider health tracking**: Circuit breaker state, rate limit awareness
 
 ## Performance
 
