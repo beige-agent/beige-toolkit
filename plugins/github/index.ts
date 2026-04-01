@@ -40,6 +40,74 @@ export function checkFromUsersFilter(
   return fromUsers.some((u) => u.toLowerCase() === normalizedUser);
 }
 
+/**
+ * Extract only the clean final response from the agent's output.
+ *
+ * Agents sometimes include internal reasoning before their actual response
+ * (e.g., "Excellent! The fix is clean and correct... Now let me respond to X:").
+ * This function extracts only the final clean response that should be posted to GitHub.
+ *
+ * Strategy:
+ * 1. Look for separator patterns like "Now let me respond to X:" or "---\n## Response"
+ * 2. If found, return everything after the separator
+ * 3. If not found, return the original response (may be already clean)
+ *
+ * @param response - The full agent response that may include internal reasoning
+ * @returns The clean final response to post to GitHub
+ */
+export function extractCleanResponse(response: string): string {
+  if (!response || !response.trim()) {
+    return response;
+  }
+
+  const trimmed = response.trim();
+
+  // Pattern 1: "Now let me respond to X:" or "Now let me respond:" - extract everything after this
+  const responseMarkerRegex = /Now let me respond to .+?:|Now let me respond:/i;
+  const markerMatch = trimmed.match(responseMarkerRegex);
+  if (markerMatch) {
+    const afterMarker = trimmed.slice(markerMatch.index! + markerMatch[0].length).trim();
+    if (afterMarker) {
+      return afterMarker;
+    }
+  }
+
+  // Pattern 2: "---\n## Response" or similar section headers
+  const sectionRegex = /---\s*\n##\s*(Response|Final Response|Comment)/i;
+  const sectionMatch = trimmed.match(sectionRegex);
+  if (sectionMatch) {
+    const afterSection = trimmed.slice(sectionMatch.index! + sectionMatch[0].length).trim();
+    if (afterSection) {
+      return afterSection;
+    }
+  }
+
+  // Pattern 3: Look for the last substantial paragraph
+  // Split by double newlines and take the last non-empty paragraph
+  const paragraphs = trimmed.split(/\n\n+/).filter(p => p.trim().length > 20);
+  if (paragraphs.length > 1) {
+    // If there are multiple paragraphs, the last one is likely the clean response
+    const lastParagraph = paragraphs[paragraphs.length - 1].trim();
+    // Check if the second-to-last paragraph looks like internal reasoning
+    // (short, starts with "Now", "Great", "Perfect", etc.)
+    if (paragraphs.length >= 2) {
+      const prevParagraph = paragraphs[paragraphs.length - 2].trim();
+      const internalReasoningPrefixes = [
+        /^(Now|Great|Perfect|Excellent|Good|OK)/i,
+        /let me respond/i,
+        /here's my response/i,
+      ];
+      if (internalReasoningPrefixes.some(prefix => prefix.test(prevParagraph))) {
+        return lastParagraph;
+      }
+    }
+  }
+
+  // No pattern found - return the original response
+  // It may already be clean, or we couldn't parse it
+  return trimmed;
+}
+
 // ---------------------------------------------------------------------------
 // Types — self-contained, no beige source imports needed.
 // ---------------------------------------------------------------------------
@@ -1159,11 +1227,18 @@ export function createPlugin(
     // This ensures the response always reaches GitHub, even if the agent
     // didn't call the github tool itself.
     if (response && response.trim() && commentTarget) {
+      // Extract only the clean final response, removing any internal reasoning
+      const cleanResponse = extractCleanResponse(response);
+
       ctx.log.info(
         `Auto-posting response to ${commentTarget.repo}#${commentTarget.number}`
       );
+      ctx.log.debug(
+        `Response length before cleanup: ${response.length} chars, after cleanup: ${cleanResponse.length} chars`
+      );
+
       try {
-        const posted = await postComment(commentTarget.repo, commentTarget.number, response.trim());
+        const posted = await postComment(commentTarget.repo, commentTarget.number, cleanResponse);
         if (!posted) {
           ctx.log.error(
             `Auto-post FAILED for ${commentTarget.repo}#${commentTarget.number} — ` +
