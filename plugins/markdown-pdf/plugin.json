@@ -1,0 +1,52 @@
+{
+  "name": "markdown-pdf",
+  "description": "Convert markdown files to PDF with support for hyperlinks, tables, and local images. Automatically resolves workspace paths (e.g. /workspace/file.md → host workspace directory).",
+  "commands": [
+    "generate <markdownPath> <pdfPath>              — Convert markdown to PDF",
+    "generate <markdownPath> <pdfPath> --options <json>  — Convert with custom options"
+  ],
+  "provides": {
+    "tools": [
+      "markdown-pdf"
+    ]
+  },
+  "defaultConfig": {
+    "format": "A4",
+    "margins": {
+      "top": "2cm",
+      "right": "2cm",
+      "bottom": "2cm",
+      "left": "2cm"
+    },
+    "displayHeaderFooter": false,
+    "printBackground": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "string",
+        "description": "Paper format: A4, Letter, Legal, etc. Default: A4",
+        "enum": ["A4", "Letter", "Legal", "Tabloid", "Ledger"]
+      },
+      "margins": {
+        "type": "object",
+        "description": "Page margins",
+        "properties": {
+          "top": { "type": "string", "description": "Top margin (e.g., '2cm')" },
+          "right": { "type": "string", "description": "Right margin (e.g., '2cm')" },
+          "bottom": { "type": "string", "description": "Bottom margin (e.g., '2cm')" },
+          "left": { "type": "string", "description": "Left margin (e.g., '2cm')" }
+        }
+      },
+      "displayHeaderFooter": {
+        "type": "boolean",
+        "description": "Display header and footer in PDF. Default: false"
+      },
+      "printBackground": {
+        "type": "boolean",
+        "description": "Print background graphics and colors. Default: true"
+      }
+    }
+  }
+}

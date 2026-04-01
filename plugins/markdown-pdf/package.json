@@ -1,0 +1,12 @@
+{
+  "name": "@beige/tool-markdown-pdf",
+  "private": true,
+  "type": "module",
+  "peerDependencies": {
+    "@matthias-hausberger/beige": "*"
+  },
+  "dependencies": {
+    "marked": "^12.0.0",
+    "puppeteer": "^22.0.0"
+  }
+}
