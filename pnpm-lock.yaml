@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@matthias-hausberger/beige': link:../beige
+
 importers:
 
   .:

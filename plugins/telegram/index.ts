@@ -31,6 +31,12 @@ import type {
   SendMessageOptions,
   ToolResult,
 } from "@matthias-hausberger/beige";
+import {
+  formatChannelError,
+  isAllModelsExhausted,
+  formatAllModelsExhaustedError,
+  getErrorTag,
+} from "@matthias-hausberger/beige";
 
 // Extend the ChannelAdapter interface to include sendPhoto support
 declare module "@matthias-hausberger/beige" {
@@ -44,11 +50,14 @@ declare module "@matthias-hausberger/beige" {
   }
 }
 import {
-  formatChannelError,
-  isAllModelsExhausted,
-  formatAllModelsExhaustedError,
-  getErrorTag,
-} from "@matthias-hausberger/beige";
+  splitFormattedMessage,
+  splitPlainText,
+  formatAndSplit,
+  escapeV2,
+  escapeHtml,
+  contextBar,
+  formatToolCall,
+} from "./format.ts";
 
 // ── Telegram reaction emoji type ─────────────────────────────────────────────
 // Subset of the emoji Telegram accepts as message reactions (as of Bot API 7.x).
@@ -194,6 +203,29 @@ export function createPlugin(
 
   const bot = new Bot(cfg.token);
 
+  // ── Global error boundary ──────────────────────────────────────────────
+  // Catches any error that bubbles out of grammY middleware (e.g. failed API
+  // calls, unexpected exceptions). Without this, such errors become unhandled
+  // rejections that crash the entire process.
+  bot.catch((err) => {
+    const errorDetail = err.error instanceof Error ? err.error.message : String(err.error);
+    ctx.log.error(`GrammY error boundary caught: ${errorDetail}`);
+
+    // Best-effort: notify the user that something went wrong.
+    // This may itself fail (e.g. TOPIC_CLOSED) — that's fine, we just log it.
+    const chatId = err.ctx?.chat?.id;
+    if (chatId) {
+      const threadId = err.ctx?.message?.message_thread_id;
+      bot.api
+        .sendMessage(chatId, `⚠️ An error occurred: ${errorDetail.slice(0, 3000)}`, {
+          ...(threadId ? { message_thread_id: threadId } : {}),
+        })
+        .catch((sendErr) => {
+          ctx.log.warn(`Failed to send error notification: ${sendErr}`);
+        });
+    }
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────
 
   function resolveAgent(userId: number, sessionKey?: string): string {
@@ -324,6 +356,11 @@ export function createPlugin(
     const onToolStart = verbose ? makeToolStartHandler(chatId, threadId) : undefined;
     const modelOverride = getModelOverride(sessionKey);
 
+    // Hoisted so the catch block can delete the "⏳ Processing…" placeholder
+    // on error — without this, a failed/timed-out request leaves the placeholder
+    // stuck in chat with no explanation.
+    let processingMsgId: number | null = null;
+
     try {
       // Typing indicator — immediate feedback
       await bot.api.sendChatAction(chatId, "typing", {
@@ -348,7 +385,6 @@ export function createPlugin(
         // shows the *current* turn's output, not a concatenation of all turns.
 
         // ── Step 1: send the "Processing" placeholder immediately ──────────
-        let processingMsgId: number | null = null;
         try {
           const sent = await bot.api.sendMessage(
             chatId,
@@ -485,10 +521,18 @@ export function createPlugin(
       clearReaction(chatId, userMessageId);
     } catch (err) {
       const errorTag = getErrorTag(err);
+      const errorDetail = err instanceof Error ? err.message : String(err);
       ctx.log.error(`[${errorTag}] Session error [${sessionKey}]: ${err}`);
 
       // 😢 = "processing failed"
       setReaction(chatId, userMessageId, "😢");
+
+      // Delete the "⏳ Processing…" placeholder so the user isn't left staring
+      // at a stuck message with no context — the error message below replaces it.
+      if (processingMsgId !== null) {
+        bot.api.deleteMessage(chatId, processingMsgId).catch(() => {});
+        processingMsgId = null;
+      }
 
       let errorMessage: string;
       if (isAllModelsExhausted(err)) {
@@ -497,11 +541,26 @@ export function createPlugin(
         errorMessage = formatChannelError(err, false);
       }
 
-      await bot.api
-        .sendMessage(chatId, errorMessage, {
+      // Always include the error tag and raw detail so the user sees what went wrong,
+      // not just a generic "something went wrong" — especially for UNKNOWN errors
+      // that were previously only visible in gateway.log.
+      const fullError = `⚠️ [${errorTag}] ${errorMessage}\n\nDetail: ${errorDetail}`;
+
+      try {
+        await bot.api.sendMessage(chatId, fullError, {
           ...(threadId ? { message_thread_id: threadId } : {}),
-        })
-        .catch(() => {});
+        });
+      } catch (sendErr) {
+        // If even the error message fails to send, try a minimal version
+        ctx.log.warn(`Failed to send error message to Telegram: ${sendErr}`);
+        await bot.api
+          .sendMessage(chatId, `⚠️ [${errorTag}] Error: ${errorDetail.slice(0, 3000)}`, {
+            ...(threadId ? { message_thread_id: threadId } : {}),
+          })
+          .catch((finalErr) => {
+            ctx.log.error(`Failed to send ANY error message to Telegram: ${finalErr}`);
+          });
+      }
     }
   }
 
@@ -526,13 +585,28 @@ export function createPlugin(
       );
     }
 
-    const v2 = markdownToTelegramV2(text || "(empty response)");
-    const chunks = splitMessage(v2, 4096);
-    for (const chunk of chunks) {
-      await bot.api.sendMessage(chatId, chunk, {
-        parse_mode: "MarkdownV2",
-        ...(threadId ? { message_thread_id: threadId } : {}),
-      });
+    const content = text || "(empty response)";
+    const threadOpts = threadId ? { message_thread_id: threadId } : {};
+
+    // Try MarkdownV2 first, fall back to plain text if Telegram rejects the formatting.
+    // This prevents "can't parse entities" errors from swallowing the entire response.
+    try {
+      const chunks = formatAndSplit(content, 4096);
+      for (const chunk of chunks) {
+        await bot.api.sendMessage(chatId, chunk, {
+          parse_mode: "MarkdownV2",
+          ...threadOpts,
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      ctx.log.warn(`MarkdownV2 send failed, falling back to plain text: ${errMsg}`);
+
+      // Send as plain text — guarantee delivery
+      const plainChunks = splitPlainText(content, 4096);
+      for (const chunk of plainChunks) {
+        await bot.api.sendMessage(chatId, chunk, { ...threadOpts });
+      }
     }
   }
 
@@ -566,6 +640,7 @@ export function createPlugin(
         "/status — Show current session info and settings\n" +
         "/agent &lt;name&gt; — Switch agent (history preserved)\n" +
         "/model provider/modelId — Switch model (history preserved)\n" +
+        "/model reset — Clear model override, revert to default\n" +
         "/verbose on|off — Toggle tool-call notifications\n" +
         "/v on|off — Same as /verbose (shorthand)\n" +
         "/streaming on|off — Toggle real-time response streaming\n" +
@@ -624,27 +699,11 @@ export function createPlugin(
     try {
       const { tokensBefore } = await ctx.compactSession(sessionKey);
 
-      // Show post-compaction context so the user sees the result immediately
-      const modelRef = ctx.getSessionModel(sessionKey);
-      const usage = ctx.getSessionUsage(sessionKey);
-
-      let contextLine = "";
-      if (modelRef && usage) {
-        const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
-        if (modelInfo) {
-          const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
-          const nowK = (usage.inputTokens / 1000).toFixed(1);
-          const maxK = (modelInfo.contextWindow / 1000).toFixed(0);
-          const bar = contextBar(usage.inputTokens, modelInfo.contextWindow);
-          contextLine = `\n\n<b>Context now:</b> ${bar} ${nowK}k / ${maxK}k (${pct}%)`;
-        }
-      }
-
       const beforeK = (tokensBefore / 1000).toFixed(1);
       await grammyCtx.api.editMessageText(
         chatId,
         progressMsg.message_id,
-        `✅ <b>Compacted!</b> Previous context: ~${beforeK}k tokens.${contextLine}`,
+        `✅ <b>Compacted!</b> Previous context: ~${beforeK}k tokens.`,
         { parse_mode: "HTML" }
       );
     } catch (err) {
@@ -656,6 +715,52 @@ export function createPlugin(
 
     ctx.log.info(`Manual compaction for session ${sessionKey}`);
   });
+
+  /**
+   * Determine the model selection state for display in /status and /model.
+   *
+   * Returns:
+   * - "default"  — using the agent's primary model, no override
+   * - "override" — user explicitly chose this model via /model
+   * - "fallback" — automatic fallback (rate limit / error), not user-chosen
+   * - undefined  — no session yet
+   */
+  function getModelState(
+    sessionKey: string,
+    agentName: string,
+    currentModel?: { provider: string; modelId: string }
+  ): "default" | "override" | "fallback" | undefined {
+    if (!currentModel) return undefined;
+
+    const agentCfg = (ctx.config as any).agents?.[agentName];
+    const primary = agentCfg?.model as { provider: string; model: string } | undefined;
+    if (!primary) return undefined;
+
+    const isPrimary =
+      currentModel.provider === primary.provider &&
+      currentModel.modelId === primary.model;
+
+    // Check if there's an explicit user override in session metadata
+    const entry = ctx.getSessionEntry(sessionKey);
+    const activeModel = entry?.metadata?.activeModel as
+      | { provider: string; modelId: string }
+      | undefined;
+
+    if (activeModel) {
+      return "override";
+    }
+
+    return isPrimary ? "default" : "fallback";
+  }
+
+  function modelStateLabel(state: "default" | "override" | "fallback" | undefined): string {
+    switch (state) {
+      case "default":  return " <i>(default)</i>";
+      case "override": return " <i>(override — /model reset to revert)</i>";
+      case "fallback": return " <i>(fallback — automatic)</i>";
+      default:         return "";
+    }
+  }
 
   // /status command
   bot.command("status", async (grammyCtx) => {
@@ -677,9 +782,11 @@ export function createPlugin(
 
     if (modelRef) {
       const modelInfo = ctx.getModel(modelRef.provider, modelRef.modelId);
+      const state = getModelState(sessionKey, agentName, modelRef);
+      const stateTag = modelStateLabel(state);
       modelLine = modelInfo
-        ? `<code>${escapeHtml(modelInfo.name)}</code>`
-        : `<code>${escapeHtml(`${modelRef.provider}/${modelRef.modelId}`)}</code>`;
+        ? `<code>${escapeHtml(modelInfo.name)}</code>${stateTag}`
+        : `<code>${escapeHtml(`${modelRef.provider}/${modelRef.modelId}`)}</code>${stateTag}`;
 
       if (usage && modelInfo) {
         const pct = ((usage.inputTokens / modelInfo.contextWindow) * 100).toFixed(1);
@@ -784,13 +891,15 @@ export function createPlugin(
       const agentCfg = (ctx.config as any).agents?.[agentName];
       const primary = agentCfg?.model;
       const fallbacks: Array<{ provider: string; model: string }> = agentCfg?.fallbackModels ?? [];
+      const state = currentModel ? getModelState(sessionKey, agentName, currentModel) : undefined;
+      const stateTag = state ? ` ${modelStateLabel(state).trim()}` : "";
 
       const modelLine = (m: { provider: string; model: string }): string => {
         const key = `${m.provider}/${m.model}`;
         const isCurrent =
           currentModel?.provider === m.provider && currentModel?.modelId === m.model;
         return isCurrent
-          ? `• <b>${escapeHtml(key)}</b> ← current`
+          ? `• <b>${escapeHtml(key)}</b> ← current${stateTag}`
           : `• ${escapeHtml(key)}`;
       };
 
@@ -801,9 +910,52 @@ export function createPlugin(
 
       await grammyCtx.reply(
         `<b>Available models for <code>${escapeHtml(agentName)}</code></b>\n\n` +
-          `${lines}\n\nUsage: /model provider/modelId`,
+          `${lines}\n\n` +
+          `Usage:\n` +
+          `• <code>/model provider/modelId</code> — switch model\n` +
+          `• <code>/model reset</code> — clear override, revert to default`,
         { parse_mode: "HTML" }
       );
+      return;
+    }
+
+    // "reset" subcommand — clear any persisted model override
+    if (modelArg.toLowerCase() === "reset") {
+      const prevModel = ctx.getSessionModel(sessionKey);
+
+      // Remove the canonical activeModel override from session metadata
+      ctx.clearSessionModel(sessionKey);
+
+      // Also remove the plugin-level modelOverride so runSession stops passing it
+      const meta =
+        (ctx.getSessionMetadata(sessionKey, "telegram_settings") as Record<string, unknown>) ?? {};
+      delete meta.modelOverride;
+      ctx.setSessionMetadata(sessionKey, "telegram_settings", meta);
+
+      // Dispose the in-memory session so the next prompt creates a fresh one
+      // using the agent's configured primary model instead of the old override.
+      await ctx.abortSession(sessionKey);
+      await ctx.disposeSession(sessionKey);
+
+      // Clear health/cooldown state for the primary model so it's retried fresh
+      // instead of being skipped due to stale rate-limit data.
+      const agentCfg = (ctx.config as any).agents?.[agentName];
+      if (agentCfg?.model) {
+        ctx.clearModelHealth(agentCfg.model.provider, agentCfg.model.model);
+      }
+
+      const primaryModel = agentCfg?.model
+        ? `<code>${escapeHtml(`${agentCfg.model.provider}/${agentCfg.model.model}`)}</code>`
+        : "<i>default</i>";
+      const prevLine = prevModel
+        ? ` (was <code>${escapeHtml(`${prevModel.provider}/${prevModel.modelId}`)}</code>)`
+        : "";
+
+      await grammyCtx.reply(
+        `✅ Model reset${prevLine}. Next message will use the default model: ${primaryModel} with normal fallback chain.`,
+        { parse_mode: "HTML" }
+      );
+      ctx.log.info(`Model override cleared for session ${sessionKey}`);
       return;
     }
 
@@ -811,7 +963,7 @@ export function createPlugin(
     const slashIdx = modelArg.indexOf("/");
     if (slashIdx === -1) {
       await grammyCtx.reply(
-        `❌ Expected format: <code>provider/modelId</code>\nExample: <code>anthropic/claude-sonnet-4-5</code>`,
+        `❌ Expected format: <code>provider/modelId</code>\nExample: <code>anthropic/claude-sonnet-4-5</code>\n\nOr use <code>/model reset</code> to clear any model override.`,
         { parse_mode: "HTML" }
       );
       return;
@@ -1095,7 +1247,9 @@ export function createPlugin(
       text: string,
       options?: SendMessageOptions
     ): Promise<void> {
-      const chunks = splitMessage(text, 4096);
+      const chunks = options?.parseMode === "markdown"
+        ? splitFormattedMessage(text, 4096)
+        : splitPlainText(text, 4096);
       for (const chunk of chunks) {
         await bot.api.sendMessage(chatId, chunk, {
           parse_mode:
@@ -1265,6 +1419,38 @@ export function createPlugin(
         ],
         handler: telegramToolHandler,
       });
+
+      // Subscribe to model switch events so the user is notified when fallback occurs
+      reg.hook("modelSwitched", async (event) => {
+        // Only notify for Telegram sessions
+        if (!event.sessionKey.startsWith("telegram:")) return;
+
+        const parts = event.sessionKey.split(":");
+        const chatId = parts[1];
+        const threadId = parts[2]; // may be undefined
+
+        const reasonLabels: Record<string, string> = {
+          fallback_rate_limit: "⏳ Rate limit on primary model",
+          fallback_error: "⚠️ Error on primary model",
+          fallback_timeout: "⏰ Primary model timed out",
+          user_override: "👤 Manual model switch",
+        };
+        const reasonText = reasonLabels[event.reason] ?? event.reason;
+        const from = `${event.previousModel.provider}/${event.previousModel.modelId}`;
+        const to = `${event.newModel.provider}/${event.newModel.modelId}`;
+
+        const message =
+          `🔄 <b>Model switched</b>\n\n` +
+          `${reasonText}\n` +
+          `From: <code>${escapeHtml(from)}</code>\n` +
+          `To: <code>${escapeHtml(to)}</code>`;
+
+        try {
+          await channelAdapter.sendMessage(chatId, threadId, message, { parseMode: "html" });
+        } catch (err) {
+          ctx.log.warn(`Failed to send model switch notification: ${err}`);
+        }
+      });
     },
 
     async start(): Promise<void> {
@@ -1280,7 +1466,7 @@ export function createPlugin(
           { command: "compact", description: "Summarise and compress conversation history" },
           { command: "status", description: "Show current session info and settings" },
           { command: "agent", description: "Switch agent: /agent <name> (history preserved)" },
-          { command: "model", description: "Switch model: /model provider/modelId (history preserved)" },
+          { command: "model", description: "Switch model: /model provider/modelId or /model reset" },
           { command: "verbose", description: "Toggle tool-call notifications: /verbose on|off" },
           { command: "v", description: "Shorthand for /verbose: /v on|off" },
           { command: "streaming", description: "Toggle real-time streaming: /streaming on|off" },
@@ -1312,194 +1498,5 @@ export function createPlugin(
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 
-/**
- * Escape the three characters that are special in Telegram HTML mode.
- * Used only for hand-crafted bot command messages (status, compact, etc.).
- */
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/**
- * Escape all characters that have special meaning in Telegram MarkdownV2 outside entities.
- * Reference: https://core.telegram.org/bots/api#markdownv2-style
- */
-function escapeV2(s: string): string {
-  // eslint-disable-next-line no-useless-escape
-  return s.replace(/[_*[\]()~`>#+=|{}.!\-\\]/g, "\\$&");
-}
-
-/**
- * Escape characters that must be escaped inside MarkdownV2 code spans and blocks.
- * Inside code, only backtick and backslash need escaping.
- */
-function escapeV2Code(s: string): string {
-  return s.replace(/[`\\]/g, "\\$&");
-}
-
-/**
- * Convert LLM Markdown output to Telegram MarkdownV2.
- *
- * Why MarkdownV2 instead of HTML:
- *   HTML requires correct nesting of every tag pair. Any ambiguous or overlapping
- *   bold/italic from the LLM (e.g. *italic **bold** italic*) produces mismatched
- *   tags that Telegram rejects, silently dropping the whole message.
- *   MarkdownV2 is the same syntax the LLM already emits — the converter's only
- *   real job is to escape special characters in plain text so Telegram doesn't
- *   misinterpret them as formatting markers.
- *
- * Strategy:
- *  1. Extract fenced code blocks, inline code, and links as opaque placeholders
- *     (each gets its own escaping rules).
- *  2. Escape ALL remaining text with MarkdownV2 escaping — safe baseline, any
- *     un-handled edge case stays as literal text, never a broken entity.
- *  3. Selectively un-escape the formatting markers we want to restore
- *     (bold, italic, strikethrough, headings, blockquotes).
- *  4. Restore placeholders.
- */
-export function markdownToTelegramV2(text: string): string {
-  const placeholders: string[] = [];
-  const save = (s: string): string => {
-    placeholders.push(s);
-    return `\x00P${placeholders.length - 1}\x00`;
-  };
-
-  // ── Step 1a: extract fenced code blocks ─────────────────────────────────
-  let result = text.replace(
-    /```(\w*)\r?\n?([\s\S]*?)```/g,
-    (_m, lang: string, code: string) => {
-      const safe = escapeV2Code(code.replace(/\n$/, "")); // trim one trailing newline
-      return save(
-        lang.trim() ? `\`\`\`${lang.trim()}\n${safe}\n\`\`\`` : `\`\`\`\n${safe}\n\`\`\``
-      );
-    }
-  );
-
-  // ── Step 1b: extract inline code ────────────────────────────────────────
-  result = result.replace(
-    /`([^`\n]+)`/g,
-    (_m, code: string) => save(`\`${escapeV2Code(code)}\``)
-  );
-
-  // ── Step 1c: extract links (before general escaping to preserve URLs) ───
-  // Inside a MarkdownV2 link URL only ) and \ need escaping.
-  result = result.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_m, linkText: string, url: string) =>
-      save(`[${escapeV2(linkText)}](${url.replace(/[)\\]/g, "\\$&")})`)
-  );
-
-  // ── Step 2: escape ALL remaining text ───────────────────────────────────
-  result = escapeV2(result);
-  // Placeholders contain \x00 which is not a V2 special char → survive escaping.
-
-  // ── Step 3: restore formatting (order: bold before italic) ──────────────
-  //
-  // After escapeV2, original `**bold**` becomes `\*\*bold\*\*` in the string.
-  // We match the escaped form and strip the backslashes to restore the markers.
-  // Any case we miss stays as literal escaped text — never a broken entity.
-
-  // Bold ***text*** (bold+italic, rare but valid)
-  result = result.replace(/\\\*\\\*\\\*(.+?)\\\*\\\*\\\*/g, "***$1***");
-
-  // Bold **text**
-  result = result.replace(/\\\*\\\*(.+?)\\\*\\\*/g, "**$1**");
-
-  // Bold __text__ (LLMs sometimes use this for bold; V2 treats __ as underline,
-  // but bold is the intent so we convert to **)
-  result = result.replace(/\\_\\_(.+?)\\_\\_/g, "**$1**");
-
-  // Italic *text* — don't match if adjacent to a * that was already restored
-  result = result.replace(/(?<!\*)\\\*(?!\*)(.+?)(?<!\*)\\\*(?!\*)/g, "*$1*");
-
-  // Italic _text_ — only at word boundaries (avoids snake_case false positives)
-  result = result.replace(/(?<![a-zA-Z0-9])\\_([^_\n]+?)\\_(?![a-zA-Z0-9])/g, "_$1_");
-
-  // Strikethrough: LLM emits ~~text~~; V2 uses ~text~ (single tilde)
-  result = result.replace(/\\~\\~(.+?)\\~\\~/g, "~$1~");
-
-  // Headings → bold (MarkdownV2 has no headings)
-  result = result.replace(/^\\#{1,6} (.+)$/gm, "**$1**");
-
-  // Horizontal rules → separator (after escaping --- becomes \-\-\-)
-  result = result.replace(/^(?:\\-){3,}$|^(?:\\\*){3,}$|^(?:\\_){3,}$/gm, "—————");
-
-  // Blockquotes: `> text` → MarkdownV2 `>text`
-  // After escaping, `>` became `\>`.
-  result = result.replace(/^\\> ?(.+)$/gm, ">$1");
-
-  // ── Step 4: restore placeholders ────────────────────────────────────────
-  result = result.replace(/\x00P(\d+)\x00/g, (_m, i: string) => placeholders[Number(i)]);
-
-  return result;
-}
-
-/**
- * Render a compact ASCII progress bar for context window usage.
- * e.g. "▓▓▓▓▓▓░░░░" for ~60% used.
- */
-function contextBar(used: number, total: number, width = 10): string {
-  const ratio = Math.min(used / total, 1);
-  const filled = Math.round(ratio * width);
-  return "▓".repeat(filled) + "░".repeat(width - filled);
-}
-
-function formatToolCall(toolName: string, params: Record<string, unknown>): string {
-  switch (toolName) {
-    case "exec": {
-      const cmd = String(params.command ?? "");
-      return `exec: ${cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd}`;
-    }
-    case "read":
-      return `read: ${String(params.path ?? "")}`;
-    case "write": {
-      const path = String(params.path ?? "");
-      const bytes = params.bytes != null ? ` (${params.bytes} bytes)` : "";
-      return `write: ${path}${bytes}`;
-    }
-    case "patch":
-      return `patch: ${String(params.path ?? "")}`;
-    default: {
-      // Some tools (e.g. git) use purely positional/flag args with no
-      // key=value pairs, so the parsed params object is empty. Fall back
-      // to the raw _args array injected by the runner for a useful label.
-      const kv = Object.fromEntries(
-        Object.entries(params).filter(([k]) => k !== "_args")
-      );
-      if (Object.keys(kv).length > 0) {
-        return `${toolName}: ${JSON.stringify(kv).slice(0, 80)}`;
-      }
-      const rawArgs = Array.isArray(params._args) ? params._args : [];
-      const cmd = rawArgs.join(" ");
-      return `${toolName}: ${cmd.length > 80 ? cmd.slice(0, 77) + "…" : cmd || "(no args)"}`;
-    }
-  }
-}
-
-function splitMessage(text: string, maxLength: number): string[] {
-  if (text.length <= maxLength) return [text];
-
-  const chunks: string[] = [];
-  let current = "";
-
-  for (const line of text.split("\n")) {
-    if (current.length + line.length + 1 > maxLength) {
-      if (current) chunks.push(current);
-      // If a single line exceeds maxLength, split it
-      if (line.length > maxLength) {
-        for (let i = 0; i < line.length; i += maxLength) {
-          chunks.push(line.slice(i, i + maxLength));
-        }
-        current = "";
-      } else {
-        current = line;
-      }
-    } else {
-      current += (current ? "\n" : "") + line;
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
+// ── Formatting helpers moved to ./format.ts ──────────────────────────────────
 

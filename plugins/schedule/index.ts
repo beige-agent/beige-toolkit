@@ -164,10 +164,10 @@ export interface ScheduleConfig {
   /** Max active schedules per agent. Default: 20 */
   maxSchedulesPerAgent?: number;
   /**
-   * Max consecutive errors before a schedule is automatically paused.
-   * 0 = pause on first error (no retries). Default: 0
+   * Max consecutive failures before a schedule is automatically marked as failed.
+   * -1 = infinite (never auto-fail). 0 = fail on first error. Default: -1
    */
-  maxConsecutiveErrors?: number;
+  maxConsecutiveFailures?: number;
 }
 
 // ── Dependency interfaces (for testing) ───────────────────────────────────────
@@ -436,8 +436,14 @@ interface ParsedCreate {
 }
 
 interface ParsedIdCommand {
-  subcommand: "get" | "cancel" | "pause" | "resume" | "test";
+  subcommand: "get" | "cancel" | "pause" | "test";
   id: string;
+}
+
+interface ParsedResume {
+  subcommand: "resume";
+  id: string;
+  once?: string; // optional new one-off timestamp (ISO8601)
 }
 
 interface ParsedList {
@@ -547,11 +553,23 @@ export function parseArgs(args: string[]): ParsedArgs {
     return result;
   }
 
+  // ── resume (supports optional --once) ──────────────────────────────────────
+  if (sub === "resume") {
+    if (!rest[0]) return { subcommand: null, error: "resume requires <id>" };
+    const result: ParsedResume = { subcommand: "resume", id: rest[0] };
+    let i = 1;
+    while (i < rest.length) {
+      if (rest[i] === "--once") result.once = rest[++i];
+      i++;
+    }
+    return result;
+  }
+
   // ── single-id commands ────────────────────────────────────────────────────
-  const idCommands: Subcommand[] = ["get", "cancel", "pause", "resume", "test"];
+  const idCommands: Subcommand[] = ["get", "cancel", "pause", "test"];
   if (idCommands.includes(sub as Subcommand)) {
     if (!rest[0]) return { subcommand: null, error: `${sub} requires <id>` };
-    return { subcommand: sub as "get" | "cancel" | "pause" | "resume" | "test", id: rest[0] };
+    return { subcommand: sub as "get" | "cancel" | "pause" | "test", id: rest[0] };
   }
 
   return { subcommand: null, error: `unknown subcommand '${sub}'` };
@@ -578,7 +596,7 @@ function usageText(): string {
     "  get     <id>",
     "  cancel  <id>",
     "  pause   <id>",
-    "  resume  <id>",
+    "  resume  <id>  [--once <ISO8601>]",
     "  history <id>  [--limit <n>]  [--format json]",
     "  test    <id>    — trigger immediately regardless of nextRun",
     "",
@@ -766,11 +784,11 @@ async function executeSchedule(
   // Track consecutive errors and auto-pause when threshold is exceeded
   if (status === "error") {
     entry.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
-    const maxConsecErrors = cfg.maxConsecutiveErrors ?? 0;
-    if (entry.consecutiveErrors > maxConsecErrors) {
+    const maxConsecFailures = cfg.maxConsecutiveFailures ?? -1;
+    if (maxConsecFailures !== -1 && entry.consecutiveErrors > maxConsecFailures) {
       entry.status = "failed";
       entry.nextRun = null;
-      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveErrors: ${maxConsecErrors})`);
+      log(`schedule ${entry.id} auto-failed after ${entry.consecutiveErrors} consecutive error(s) (maxConsecutiveFailures: ${maxConsecFailures})`);
 
       return {
         scheduleId: entry.id,
@@ -825,12 +843,15 @@ async function executeSchedule(
 /**
  * One tick of the background loop.
  * Loads all active schedules, fires any that are due, saves updated entries.
+ * Different schedules run in parallel, but each individual schedule can only
+ * have one execution in flight at a time (tracked via runningSchedules).
  */
 export async function runTick(
   storage: ReturnType<typeof makeStorage>,
   cfg: ScheduleConfig,
   deps: Required<ScheduleDeps>,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  runningSchedules: Set<string> = new Set()
 ): Promise<void> {
   const now = deps.now();
   const all = storage.listAllSchedules();
@@ -838,10 +859,31 @@ export async function runTick(
     (e) => e.status === "active" && e.nextRun !== null && new Date(e.nextRun) <= now
   );
 
-  for (const entry of due) {
-    const record = await executeSchedule(entry, cfg, deps, log);
-    storage.saveSchedule(entry); // persists updated status / nextRun
-    storage.appendHistory(record);
+  const results = await Promise.allSettled(
+    due.map(async (entry) => {
+      // Per-schedule concurrency guard: skip if this schedule is already running.
+      // The missed window is simply skipped (no catch-up).
+      if (runningSchedules.has(entry.id)) {
+        log(`schedule ${entry.id} skipped (previous execution still running)`);
+        return;
+      }
+      runningSchedules.add(entry.id);
+      try {
+        const record = await executeSchedule(entry, cfg, deps, log);
+        storage.saveSchedule(entry); // persists updated status / nextRun
+        storage.appendHistory(record);
+      } finally {
+        runningSchedules.delete(entry.id);
+      }
+    })
+  );
+
+  // Log any unexpected errors (executeSchedule already handles action errors,
+  // so these would be storage/serialisation failures)
+  for (const r of results) {
+    if (r.status === "rejected") {
+      log(`schedule tick: unexpected error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+    }
   }
 }
 
@@ -1073,24 +1115,53 @@ function handlePause(
 }
 
 function handleResume(
-  id: string,
+  parsed: ParsedResume,
   callerAgent: string,
   storage: ReturnType<typeof makeStorage>,
   deps: Required<ScheduleDeps>,
   cfg: ScheduleConfig
 ): { output: string; exitCode: number } {
+  const { id } = parsed;
   const entry = storage.loadSchedule(id);
   if (!entry) return { output: `Error: schedule '${id}' not found.`, exitCode: 1 };
   if (entry.createdBy !== callerAgent) return { output: `Error: schedule '${id}' does not belong to you.`, exitCode: 1 };
-  if (entry.status !== "paused") return { output: `Error: schedule '${id}' is ${entry.status} — only paused schedules can be resumed.`, exitCode: 1 };
+  if (entry.status === "active") return { output: `Error: schedule '${id}' is already active.`, exitCode: 1 };
+  if (entry.status === "completed") return { output: `Error: schedule '${id}' is completed — completed schedules cannot be resumed.`, exitCode: 1 };
 
-  // Re-compute nextRun in case it has drifted while paused
+  // Optional --once flag: update the trigger time for one-off schedules
+  if (parsed.once) {
+    if (entry.trigger.type !== "once") {
+      return { output: `Error: --once can only be used with one-off schedules, but '${id}' is a cron schedule.`, exitCode: 1 };
+    }
+    const newTime = new Date(parsed.once);
+    if (isNaN(newTime.getTime())) {
+      return { output: `Error: invalid datetime '${parsed.once}'.`, exitCode: 1 };
+    }
+    if (newTime <= deps.now()) {
+      return { output: `Error: datetime '${parsed.once}' is in the past.`, exitCode: 1 };
+    }
+    entry.trigger.datetime = newTime.toISOString();
+  }
+
+  // Re-compute nextRun
   if (entry.trigger.type === "cron") {
     const next = getNextCronRun(entry.trigger.expression, entry.trigger.timezone, deps.now());
     if (!next) {
       return { output: `Error: cron expression "${entry.trigger.expression}" produces no future runs.`, exitCode: 1 };
     }
     entry.nextRun = next.toISOString();
+  } else {
+    // One-off: use the (possibly updated) trigger time
+    const triggerTime = new Date(entry.trigger.datetime);
+    if (triggerTime <= deps.now()) {
+      return { output: `Error: schedule '${id}' is a one-off whose trigger time has already passed. Use --once <ISO8601> to set a new time.`, exitCode: 1 };
+    }
+    entry.nextRun = entry.trigger.datetime;
+  }
+
+  // Reset consecutive error counter when resuming from failed state
+  if (entry.status === "failed") {
+    entry.consecutiveErrors = 0;
   }
 
   entry.status = "active";
@@ -1241,7 +1312,7 @@ export function createHandler(
         return handlePause(parsed.id, callerAgent, storage);
 
       case "resume":
-        return handleResume(parsed.id, callerAgent, storage, resolvedDeps, cfg);
+        return handleResume(parsed as ParsedResume, callerAgent, storage, resolvedDeps, cfg);
 
       case "history":
         return handleHistory(parsed.id, callerAgent, parsed, storage);
@@ -1270,7 +1341,8 @@ export function createTickFn(
 ): () => Promise<void> {
   const storagePath = resolveStoragePath(cfg);
   const storage = makeStorage(storagePath, deps.fs);
-  return () => runTick(storage, cfg, deps, log);
+  const runningSchedules = new Set<string>();
+  return () => runTick(storage, cfg, deps, log, runningSchedules);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1320,7 +1392,7 @@ export function createPlugin(
   const handler = createHandler(handlerCfg, resolvedDeps);
 
   let tickInterval: ReturnType<typeof setInterval> | null = null;
-  let tickRunning = false;
+  const runningSchedules = new Set<string>();
 
   return {
     register(reg: PluginRegistrar): void {
@@ -1338,26 +1410,16 @@ export function createPlugin(
 
       // Run once at startup to catch any schedules that fired while the gateway was down
       try {
-        await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg));
+        await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg), runningSchedules);
       } catch (err) {
         ctx.log.error(`schedule: startup tick failed: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       tickInterval = setInterval(async () => {
-        // Concurrency guard: skip this tick if the previous one is still running.
-        // This prevents runaway parallel executions when a prompt/exec takes
-        // longer than tickInterval (the root cause of the "every 15 seconds" bug).
-        if (tickRunning) {
-          ctx.log.info("schedule: tick skipped (previous tick still running)");
-          return;
-        }
-        tickRunning = true;
         try {
-          await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg));
+          await runTick(storage, cfg, resolvedDeps, (msg) => ctx.log.info(msg), runningSchedules);
         } catch (err) {
           ctx.log.error(`schedule: tick error: ${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          tickRunning = false;
         }
       }, intervalSec * 1000);
     },
