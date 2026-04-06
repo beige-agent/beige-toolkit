@@ -213,11 +213,12 @@ describe("Telegram Plugin", () => {
       expect(reg.tools[0].description).toContain("Send messages");
     });
 
-    it("does not register hooks or skills", () => {
+    it("registers the modelSwitched hook", () => {
       const plugin = createPlugin(validConfig, ctx);
       plugin.register(reg);
 
-      expect(reg.hooks).toHaveLength(0);
+      expect(reg.hooks).toHaveLength(1);
+      expect(reg.hooks[0].name).toBe("modelSwitched");
       expect(reg.skills).toHaveLength(0);
     });
   });

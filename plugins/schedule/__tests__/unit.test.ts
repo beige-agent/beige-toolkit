@@ -791,7 +791,7 @@ describe("test subcommand", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("consecutive error handling", () => {
-  it("auto-fails a schedule on first error when maxConsecutiveErrors is 0 (default)", async () => {
+  it("auto-fails a schedule on first error when maxConsecutiveFailures is 0", async () => {
     let call = 0;
     const deps = makeDeps({
       promptFn: async () => { throw new Error("agent crashed"); },
@@ -801,10 +801,11 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const handler = createHandler(BASE_CFG, deps);
+    const cfgFailOnFirst: ScheduleConfig = { ...BASE_CFG, maxConsecutiveFailures: 0 };
+    const handler = createHandler(cfgFailOnFirst, deps);
     await handler(["create", "--cron", "* * * * *", "--prompt", "boom"], undefined, SESSION_CTX);
 
-    const tick = createTickFn(BASE_CFG, deps, () => {});
+    const tick = createTickFn(cfgFailOnFirst, deps, () => {});
     await tick();
 
     const fs = deps.fs as ReturnType<typeof makeFakeFs>;
@@ -816,7 +817,7 @@ describe("consecutive error handling", () => {
     expect(saved.runCount).toBe(1);
   });
 
-  it("allows retries up to maxConsecutiveErrors before failing", async () => {
+  it("allows retries up to maxConsecutiveFailures before failing", async () => {
     let call = 0;
     const deps = makeDeps({
       promptFn: async () => { throw new Error("still broken"); },
@@ -828,7 +829,7 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveErrors: 2 };
+    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveFailures: 2 };
     const handler = createHandler(cfgWithRetries, deps);
     await handler(["create", "--cron", "* * * * *", "--prompt", "retry me"], undefined, SESSION_CTX);
 
@@ -872,7 +873,7 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveErrors: 3 };
+    const cfgWithRetries: ScheduleConfig = { ...BASE_CFG, maxConsecutiveFailures: 3 };
     const handler = createHandler(cfgWithRetries, deps);
     await handler(["create", "--cron", "* * * * *", "--prompt", "flaky"], undefined, SESSION_CTX);
 
@@ -893,7 +894,7 @@ describe("consecutive error handling", () => {
     expect(saved.status).toBe("active");
   });
 
-  it("auto-fails a one-off schedule on error with default config", async () => {
+  it("auto-fails a one-off schedule on error when maxConsecutiveFailures is 0", async () => {
     let call = 0;
     const deps = makeDeps({
       promptFn: async () => { throw new Error("boom"); },
@@ -903,10 +904,11 @@ describe("consecutive error handling", () => {
       },
     });
 
-    const handler = createHandler(BASE_CFG, deps);
+    const cfgFailOnFirst: ScheduleConfig = { ...BASE_CFG, maxConsecutiveFailures: 0 };
+    const handler = createHandler(cfgFailOnFirst, deps);
     await handler(["create", "--once", "2026-03-27T11:00:00Z", "--prompt", "fail once"], undefined, SESSION_CTX);
 
-    const tick = createTickFn(BASE_CFG, deps, () => {});
+    const tick = createTickFn(cfgFailOnFirst, deps, () => {});
     await tick();
 
     const fs = deps.fs as ReturnType<typeof makeFakeFs>;
