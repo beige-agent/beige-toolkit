@@ -1,5 +1,7 @@
 # Brave Search Plugin
 
+> ⚠️ **This plugin is outdated.** The recommended way to use Brave Search is via the [websearch plugin](../websearch/README.md), which supports multiple providers (including Brave), automatic fallback, caching, and more. Use this plugin only if you need a standalone Brave-only integration.
+
 Web search using the Brave Search API — a fast, privacy-focused alternative to Google.
 
 ## Installation
