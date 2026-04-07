@@ -273,6 +273,8 @@ export function createPlugin(
     }
     img {
       max-width: 100%;
+      max-height: 30vh;
+      width: auto;
       height: auto;
       display: block;
       margin: 1em 0;
@@ -390,6 +392,21 @@ ${htmlBody}
 
       try {
         const page = await browser.newPage();
+
+        // Set viewport to match the paper size so that vh/vw CSS units
+        // correctly represent a fraction of the page height/width.
+        // Values are in px at 96 dpi (CSS reference pixel).
+        const pageSizePx: Record<string, { width: number; height: number }> = {
+          a4:     { width: 794,  height: 1123 },
+          letter: { width: 816,  height: 1056 },
+          legal:  { width: 816,  height: 1344 },
+          a3:     { width: 1123, height: 1587 },
+          a5:     { width: 559,  height: 794  },
+          tabloid:{ width: 1056, height: 1632 },
+        };
+        const formatKey = (finalOptions.format as string ?? "A4").toLowerCase();
+        const viewportSize = pageSizePx[formatKey] ?? pageSizePx["a4"];
+        await page.setViewport(viewportSize);
 
         // Load the HTML file
         await page.goto(`file://${tempHtmlPath}`, {
