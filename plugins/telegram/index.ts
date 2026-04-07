@@ -20,7 +20,7 @@
 
 import { Bot, type Context } from "grammy";
 import { createWriteStream, mkdirSync } from "fs";
-import { join, resolve, basename } from "path";
+import { join, resolve, basename, isAbsolute } from "path";
 import * as https from "https";
 import * as http from "http";
 import type {
@@ -136,6 +136,44 @@ export function createPlugin(
     const beigeHome = resolve(ctx.dataDir, "../..");
     const defaultAgent = cfg.agentMapping.default;
     return join(beigeHome, "agents", defaultAgent, "workspace");
+  }
+
+  /**
+   * Resolve a file path (from an agent tool call) to an absolute host path.
+   *
+   * Agents running inside a sandbox see their workspace mounted at /workspace.
+   * The gateway passes the real host-side root via config.workspaceDir (or the
+   * derived beigeDir path).  Three cases are handled:
+   *
+   *   1. /workspace/...  →  <workspaceDir>/...
+   *      Strip the sandbox mount prefix and rebase onto the real workspace root.
+   *
+   *   2. relative path   →  <workspaceDir>/<path>
+   *      Resolved against the workspace root (no sub-cwd needed here since tool
+   *      calls always use workspace-relative paths like "media/outbound/report.pdf").
+   *
+   *   3. absolute path (not /workspace) → used as-is
+   *      Already a real host path (e.g. when called directly from the TUI).
+   *
+   * This mirrors the path resolution logic in the image plugin.
+   */
+  function resolveFilePath(filePath: string): string {
+    const workspaceRoot = resolveWorkspaceDir();
+    const sandboxMount = "/workspace";
+
+    // Case 1: agent sandbox /workspace prefix — strip and rebase onto host root
+    if (filePath.startsWith(sandboxMount + "/") || filePath === sandboxMount) {
+      const rel = filePath.slice(sandboxMount.length).replace(/^\//, "");
+      return join(workspaceRoot, rel);
+    }
+
+    // Case 2: relative path — resolve against workspace root
+    if (!isAbsolute(filePath)) {
+      return join(workspaceRoot, filePath);
+    }
+
+    // Case 3: absolute non-/workspace path — already a host path, use as-is
+    return filePath;
   }
 
   /**
@@ -1247,19 +1285,22 @@ export function createPlugin(
       photoPath: string,
       caption?: string
     ): Promise<void> {
-      // Check if photoPath is a URL or a local file
-      if (photoPath.startsWith('http://') || photoPath.startsWith('https://')) {
-        // Send photo by URL
+      const threadParams = threadId ? { message_thread_id: parseInt(threadId, 10) } : {};
+
+      if (photoPath.startsWith("http://") || photoPath.startsWith("https://")) {
+        // Send photo by URL — grammY accepts URL strings directly
         await bot.api.sendPhoto(chatId, photoPath, {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+          caption,
+          ...threadParams,
         });
       } else {
-        // Send photo from local file
-        // GrammY's InputFile can handle local file paths
-        await bot.api.sendPhoto(chatId, photoPath, {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+        // Resolve /workspace/... and relative paths to real host paths,
+        // then wrap in InputFile so grammY uploads the file from disk.
+        const resolvedPath = resolveFilePath(photoPath);
+        const { InputFile } = await import("grammy");
+        await bot.api.sendPhoto(chatId, new InputFile(resolvedPath), {
+          caption,
+          ...threadParams,
         });
       }
     },
@@ -1270,25 +1311,23 @@ export function createPlugin(
       filePath: string,
       caption?: string
     ): Promise<void> {
-      // Resolve workspace-relative paths (e.g. "media/outbound/report.pdf")
-      // to an absolute host path so GrammY can read the file from disk.
-      const resolvedPath = filePath.startsWith("/")
-        ? filePath
-        : join(resolveWorkspaceDir(), filePath);
+      const threadParams = threadId ? { message_thread_id: parseInt(threadId, 10) } : {};
 
-      if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-        // Send document by URL directly
+      if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
+        // Send document by URL directly — grammY accepts URL strings
         await bot.api.sendDocument(chatId, filePath, {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+          caption,
+          ...threadParams,
         });
       } else {
-        // Send document from local file using GrammY's InputFile
+        // Resolve /workspace/... and relative paths to real host paths,
+        // then wrap in InputFile so grammY uploads the file from disk.
+        const resolvedPath = resolveFilePath(filePath);
         const { InputFile } = await import("grammy");
         const filename = basename(resolvedPath);
         await bot.api.sendDocument(chatId, new InputFile(resolvedPath, filename), {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+          caption,
+          ...threadParams,
         });
       }
     },
