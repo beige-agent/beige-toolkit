@@ -135,17 +135,17 @@ export function createPlugin(
    * This creates a complete HTML document with CSS styling that supports
    * tables, code blocks, hyperlinks, and images.
    */
-  function generateHtml(markdownContent: string, basePath: string): string {
+  async function generateHtml(markdownContent: string, basePath: string): Promise<string> {
     // Import marked dynamically to avoid issues if not installed
-    let marked: any;
+    let markedFn: any;
     try {
-      marked = require("marked");
+      const markedModule: any = await import("marked");
+      markedFn = markedModule.marked || markedModule;
     } catch {
       return "<html><body><h1>Error</h1><p>marked module not found. Please install dependencies.</p></body></html>";
     }
 
-    const markedLib = marked.default || marked;
-    const htmlBody = markedLib(markdownContent);
+    const htmlBody = markedFn(markdownContent);
 
     // Create styled HTML document
     return `<!DOCTYPE html>
@@ -326,7 +326,7 @@ ${htmlBody}
 
       // Generate HTML from markdown
       const basePath = dirname(resolvedMarkdownPath);
-      const htmlContent = generateHtml(markdownContent, basePath);
+      const htmlContent = await generateHtml(markdownContent, basePath);
 
       // Create a temporary HTML file
       const tempHtmlPath = resolvedPdfPath + ".temp.html";
