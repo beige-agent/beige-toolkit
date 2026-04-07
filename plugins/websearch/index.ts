@@ -14,7 +14,7 @@
  * Supports: Tavily, Brave (Exa and WebSearchAPI framework ready)
  *
  * Config (passed via pluginConfigs or plugins.websearch.config):
- *   providerPriority: Array of providers (implicit array order = priority)
+ *   providerPriority: Array of providers (implicit array order = priority), each with an apiKey field
  *   fallbackBehavior: "try-all" | "fail-fast" (default: "try-all")
  *   maxProvidersToTry: Max number of providers to attempt (default: 3)
  *   timeoutSeconds: Request timeout in seconds (default: 30)
@@ -29,11 +29,10 @@
  *   maxRetries: Max retry attempts (default: 3)
  *   retryDelayMs: Delay between retries in milliseconds (default: 1000)
  *
- * Environment Variables:
- *   TAVILY_API_KEY, TAVILY_API_KEY_2: Tavily API keys
- *   BRAVE_API_KEY: Brave Search API key
- *   EXA_API_KEY: Exa API key
- *   WEBSEARCHAPI_KEY: WebSearchAPI key
+ * API Keys:
+ *   All API keys must be defined in the plugin config under providerPriority[].apiKey.
+ *   No environment variables are read automatically by this plugin.
+ *   Example: { "provider": "tavily", "enabled": true, "apiKey": "tvly-..." }
  */
 
 import type {
@@ -54,7 +53,6 @@ interface ProviderPriority {
 interface ProviderConfig {
   name: string;
   id: string;
-  apiKeyEnvVar: string;
   supports: {
     search: boolean;
     answer: boolean;
@@ -137,7 +135,6 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   tavily: {
     name: "Tavily",
     id: "tavily",
-    apiKeyEnvVar: "TAVILY_API_KEY",
     supports: { search: true, answer: true, extract: false, content: true, similar: false, code: false },
     maxResults: 10,
     freeTier: 1000,
@@ -146,7 +143,6 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   brave: {
     name: "Brave Search",
     id: "brave",
-    apiKeyEnvVar: "BRAVE_API_KEY",
     supports: { search: true, answer: false, extract: false, content: false, similar: false, code: false },
     maxResults: 20,
     freeTier: 2000,
@@ -155,7 +151,6 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   exa: {
     name: "Exa",
     id: "exa",
-    apiKeyEnvVar: "EXA_API_KEY",
     supports: { search: true, answer: true, extract: false, content: true, similar: true, code: true },
     maxResults: 10,
     freeTier: 1000,
@@ -164,7 +159,6 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   websearchapi: {
     name: "WebSearchAPI",
     id: "websearchapi",
-    apiKeyEnvVar: "WEBSEARCHAPI_KEY",
     supports: { search: true, answer: true, extract: false, content: true, similar: false, code: false },
     maxResults: 10,
     freeTier: 2000,
@@ -301,7 +295,8 @@ async function initContentExtraction(): Promise<void> {
     import("turndown"),
   ]);
 
-  const { default: gfm } = await import("turndown-plugin-gfm");
+  const gfmModule = await import("turndown-plugin-gfm");
+  const gfm = gfmModule.gfm ?? gfmModule.default;
 
   readability = ReadabilityClass as any;
   JSDOM = JSDOMClass as any;
@@ -379,17 +374,19 @@ export function createPlugin(
 
   // ── Provider implementations ─────────────────────────────────────────────────────
 
-  async function getApiKey(providerId: string, customKey?: string): string {
-    const key = customKey || process.env[PROVIDERS[providerId].apiKeyEnvVar];
-    if (!key) {
+  async function getApiKey(providerId: string, customKey?: string): Promise<string> {
+    // API keys must be set in the plugin config — either as apiKey on the providerPriority entry
+    // or passed directly as customKey. No environment variable fallback.
+    const configKey = customKey ?? providerPriority.find((p) => p.provider === providerId)?.apiKey;
+    if (!configKey?.trim()) {
       throw new SearchError(
-        `API key not configured for ${PROVIDERS[providerId].name}. Set ${PROVIDERS[providerId].apiKeyEnvVar} environment variable.`,
+        `API key not configured for ${PROVIDERS[providerId].name}. Set apiKey in the providerPriority config entry for "${providerId}".`,
         SearchErrorType.AUTH_FAILED,
         providerId,
-        true
+        false
       );
     }
-    return key;
+    return configKey.trim();
   }
 
   async function searchTavily(
@@ -749,12 +746,9 @@ export function createPlugin(
       "  websearch answer <query>                    — Get AI-generated direct answer (Tavily)\n" +
       "  websearch extract <url>                     — Extract content from URL (local)\n" +
       "\n" +
-      "Environment variables:\n" +
-      "  TAVILY_API_KEY        — Tavily API key (primary)\n" +
-      "  TAVILY_API_KEY_2      — Tavily API key (backup)\n" +
-      "  BRAVE_API_KEY         — Brave API key (primary)\n" +
-      "  EXA_API_KEY           — Exa API key\n" +
-      "  WEBSEARCHAPI_KEY       — WebSearchAPI key";
+      "Configuration:\n" +
+      "  API keys must be set in the plugin config under providerPriority[].apiKey.\n" +
+      "  Example: { \"provider\": \"tavily\", \"enabled\": true, \"apiKey\": \"tvly-...\" }";
 
     if (args.length === 0) {
       return { output: USAGE, exitCode: 1 };
@@ -768,6 +762,7 @@ export function createPlugin(
         let provider: string | undefined;
         let count: number | undefined;
         let format: string | undefined;
+        let queryWords: string[] = [];
 
         for (let i = 0; i < queryArgs.length; i++) {
           switch (queryArgs[i]) {

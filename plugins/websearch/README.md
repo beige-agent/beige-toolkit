@@ -24,7 +24,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `providerPriority` | `[{provider: "tavily", enabled: true}, {provider: "brave", enabled: true}]` | Array of providers. **Array order determines priority** (first = highest). Supports `tavily`, `brave`, `exa`, `websearchapi`. Multiple instances of same provider allowed (e.g., separate primary and backup Tavily keys). |
+| `providerPriority` | `[]` | Array of providers. **Array order determines priority** (first = highest). Each entry requires an `apiKey`. Supports `tavily`, `brave`, `exa`, `websearchapi`. Multiple instances of same provider allowed (e.g., separate primary and backup keys). |
 | `fallbackBehavior` | `try-all` | How to handle provider failures: `"try-all"` continues to next provider, `"fail-fast"` stops on first error. |
 | `maxProvidersToTry` | `3` | Maximum number of providers to attempt before giving up. |
 | `timeoutSeconds` | `30` | Request timeout in seconds for all provider API calls. |
@@ -39,14 +39,26 @@ beige tools install github:matthias-hausberger/beige-toolkit
 | `maxRetries` | `3` | Maximum retry attempts for failed requests. |
 | `retryDelayMs` | `1000` | Delay between retries in milliseconds (exponential backoff: delay * 2^attempt). |
 
+### Provider Priority Entry
+
+Each entry in `providerPriority` supports:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider` | ✅ | Provider identifier: `tavily`, `brave`, `exa`, `websearchapi` |
+| `enabled` | ✅ | Whether this provider is active |
+| `apiKey` | ✅ | API key for this provider |
+
+> **API keys are set directly in config.** No environment variables are read automatically by this plugin. If you prefer not to hardcode keys, you can reference env vars via your config file's variable interpolation (e.g. `"apiKey": "${TAVILY_API_KEY}"`).
+
 ## Prerequisites
 
-| Requirement | Details |
-|---|---|
-| Tavily API key (optional) | Get one at [app.tavily.com](https://app.tavily.com). Free tier covers 1,000 requests/month. |
-| Brave API key (optional) | Get one at [brave.com/search/api](https://brave.com/search/api/). Free tier covers ~2,000 requests/month. |
-| Exa API key (optional) | Get one at [dashboard.exa.ai](https://dashboard.exa.ai). Free tier covers 1,000 requests/month. |
-| WebSearchAPI key (optional) | Get one at [websearchapi.ai](https://websearchapi.ai). Free tier covers 2,000 requests/month. |
+| Provider | Where to get a key | Free tier |
+|---|---|---|
+| Tavily | [app.tavily.com](https://app.tavily.com) | 1,000 requests/month |
+| Brave | [brave.com/search/api](https://brave.com/search/api/) | ~2,000 requests/month |
+| Exa | [dashboard.exa.ai](https://dashboard.exa.ai) | 1,000 requests/month |
+| WebSearchAPI | [websearchapi.ai](https://websearchapi.ai) | 2,000 requests/month |
 
 ## Config Examples
 
@@ -58,8 +70,8 @@ beige tools install github:matthias-hausberger/beige-toolkit
     "websearch": {
       "config": {
         "providerPriority": [
-          { "provider": "tavily", "enabled": true },
-          { "provider": "brave", "enabled": true }
+          { "provider": "tavily", "enabled": true, "apiKey": "tvly-..." },
+          { "provider": "brave",  "enabled": true, "apiKey": "BSA-..." }
         ]
       }
     }
@@ -67,7 +79,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 }
 ```
 
-### High availability with backup Tavily key:
+### Using environment variable interpolation for keys:
 
 ```json5
 {
@@ -75,9 +87,26 @@ beige tools install github:matthias-hausberger/beige-toolkit
     "websearch": {
       "config": {
         "providerPriority": [
-          { "provider": "tavily", "enabled": true },         // Primary key
-          { "provider": "tavily", "enabled": true, "apiKey": "TAVILY_API_KEY_2" },  // Backup key
-          { "provider": "brave", "enabled": true }           // Fallback
+          { "provider": "tavily", "enabled": true, "apiKey": "${TAVILY_API_KEY}" },
+          { "provider": "brave",  "enabled": true, "apiKey": "${BRAVE_API_KEY}" }
+        ]
+      }
+    }
+  }
+}
+```
+
+### High availability with a backup Tavily key:
+
+```json5
+{
+  "plugins": {
+    "websearch": {
+      "config": {
+        "providerPriority": [
+          { "provider": "tavily", "enabled": true, "apiKey": "${TAVILY_API_KEY}" },      // Primary
+          { "provider": "tavily", "enabled": true, "apiKey": "${TAVILY_API_KEY_2}" },    // Backup
+          { "provider": "brave",  "enabled": true, "apiKey": "${BRAVE_API_KEY}" }        // Fallback
         ],
         "maxProvidersToTry": 3,
         "fallbackBehavior": "try-all",
@@ -88,8 +117,6 @@ beige tools install github:matthias-hausberger/beige-toolkit
 }
 ```
 
-**Note**: Array order determines priority (index 0 = highest, index 1 = fallback, etc.). No explicit "weight" field needed!
-
 ### Cost-optimized with longer cache:
 
 ```json5
@@ -98,15 +125,12 @@ beige tools install github:matthias-hausberger/beige-toolkit
     "websearch": {
       "config": {
         "providerPriority": [
-          { "provider": "tavily", "enabled": true }
+          { "provider": "tavily", "enabled": true, "apiKey": "${TAVILY_API_KEY}" }
         ],
         "enableCache": true,
         "cacheTTLSeconds": 600
       }
     }
-  },
-  "env": {
-    "TAVILY_API_KEY": "your_key_here"
   }
 }
 ```
@@ -119,15 +143,12 @@ beige tools install github:matthias-hausberger/beige-toolkit
     "websearch": {
       "config": {
         "providerPriority": [
-          { "provider": "tavily", "enabled": true }
+          { "provider": "tavily", "enabled": true, "apiKey": "${TAVILY_API_KEY}" }
         ],
         "defaultFormat": "json",
         "aiOptimized": true
       }
     }
-  },
-  "env": {
-    "TAVILY_API_KEY": "your_key_here"
   }
 }
 ```
@@ -179,7 +200,7 @@ Output format options:
 websearch answer <query>
 ```
 
-Returns direct answer with source citations (currently Tavily-only, will add Exa in future).
+Returns direct answer with source citations (currently Tavily-only).
 
 ### Extract content from URL
 
@@ -246,13 +267,13 @@ In-memory cache with TTL:
 URL → Fetch (browser headers) → HTML → JSDOM → Readability → Turndown → Markdown
 ```
 
-**Mozilla Readability**: Extracts main article content, removes clutter
+**Mozilla Readability**: Extracts main article content, removes clutter  
 **Turndown + GFM**: Converts HTML to clean Markdown with code block support
 
 ## Features
 
 - ✅ **Multi-provider support**: Tavily, Brave, Exa (planned), WebSearchAPI (planned)
-- ✅ **Provider priority system**: Array order determines priority (no "weight" field needed)
+- ✅ **Provider priority system**: Array order determines priority
 - ✅ **Automatic fallback**: Try next provider on failure (configurable: try-all or fail-fast)
 - ✅ **Circuit breaker pattern**: Prevents cascading failures
 - ✅ **Request caching**: In-memory caching with configurable TTL
@@ -260,7 +281,7 @@ URL → Fetch (browser headers) → HTML → JSDOM → Readability → Turndown 
 - ✅ **Local content extraction**: Mozilla Readability + Turndown for Markdown
 - ✅ **Multiple output formats**: Human-readable, JSON, Markdown
 - ✅ **AI-optimized output**: JSON format with rich metadata for direct LLM consumption
-- ✅ **Detailed error handling**: 6 error types, retry detection, provider health tracking
+- ✅ **Config-only API keys**: No implicit environment variable reads
 
 ## Performance
 

@@ -29,10 +29,10 @@
             },
             "apiKey": {
               "type": "string",
-              "description": "Optional override API key for this provider instance"
+              "description": "API key for this provider. Required for the provider to function."
             }
           },
-          "required": ["provider", "weight", "enabled"]
+          "required": ["provider", "enabled", "apiKey"]
         }
       },
       "fallbackBehavior": {
@@ -113,30 +113,4 @@
       }
     }
   },
-  "environmentVariables": {
-    "TAVILY_API_KEY": {
-      "description": "Tavily Search API key (primary)",
-      "required": false
-    },
-    "TAVILY_API_KEY_2": {
-      "description": "Tavily Search API key (backup)",
-      "required": false
-    },
-    "BRAVE_API_KEY": {
-      "description": "Brave Search API key (primary)",
-      "required": false
-    },
-    "BRAVE_API_KEY_2": {
-      "description": "Brave Search API key (backup)",
-      "required": false
-    },
-    "EXA_API_KEY": {
-      "description": "Exa API key",
-      "required": false
-    },
-    "WEBSEARCHAPI_KEY": {
-      "description": "WebSearchAPI key",
-      "required": false
-    }
-  }
 }
