@@ -454,12 +454,12 @@ export function createPlugin(
       // Extract content locally if requested
       if (options.content && results.length > 0) {
         const contents = await Promise.all(
-          results.slice(0, extractionMaxResults).map((r) =>
+          results.slice(0, extractionMaxResults).map((r: SearchResult) =>
             extractContentLocal(r.url, extractionTimeout * 1000).catch(() => null)
           )
         );
 
-        results.forEach((r, i) => {
+        results.forEach((r: SearchResult, i: number) => {
           r.content = contents[i] ? contents[i]!.content : undefined;
         });
       }
@@ -501,10 +501,11 @@ export function createPlugin(
     return extractContentLocal(url, extractionTimeout * 1000);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function fetchJSON(
     url: string,
     options: RequestInit & { signal?: AbortSignal } = {}
-  ): Promise<Record<string, unknown>> {
+  ): Promise<any> {
     const response = await fetch(url, options);
 
     if (!response.ok) {
@@ -519,12 +520,14 @@ export function createPlugin(
               ? SearchErrorType.TIMEOUT
               : SearchErrorType.NETWORK_ERROR,
         "unknown",
+        response.status === 429 || response.status >= 500, // retryable
         response.status,
         text.slice(0, 200)
       );
     }
 
-    return response.json() as Promise<Record<string, unknown>>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return response.json() as Promise<any>;
   }
 
   // ── Output formatters ─────────────────────────────────────────────────────
@@ -650,6 +653,17 @@ export function createPlugin(
 
   // ── Main search function ───────────────────────────────────────────────────
 
+  async function searchProvider(providerId: string, query: string): Promise<SearchResult[]> {
+    switch (providerId) {
+      case "tavily":
+        return searchTavily(query, { count: maxResults, content: enableLocalExtraction });
+      case "brave":
+        return searchBrave(query, { count: maxResults, content: enableLocalExtraction });
+      default:
+        throw new Error(`Provider "${providerId}" is not implemented yet`);
+    }
+  }
+
   async function searchWithFallback(query: string): Promise<SearchResult[]> {
     // Normalize query for caching
     const normalizedQuery = query.trim().toLowerCase();
@@ -673,7 +687,7 @@ export function createPlugin(
       const providerConfig = PROVIDERS[providerId];
 
       if (!providerConfig.supports.search) {
-        ctx.log.debug(`Provider ${providerId} does not support search`);
+        ctx.log.info(`Provider ${providerId} does not support search`);
         continue;
       }
 
@@ -694,7 +708,7 @@ export function createPlugin(
             });
             break;
           default:
-            ctx.log.debug(`Provider ${providerId} not implemented yet`);
+            ctx.log.info(`Provider ${providerId} not implemented yet`);
             continue;
         }
 

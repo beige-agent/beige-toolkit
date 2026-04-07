@@ -112,5 +112,5 @@
         "description": "Delay between retries in milliseconds"
       }
     }
-  },
+  }
 }
