@@ -38,13 +38,19 @@ import {
   getErrorTag,
 } from "@matthias-hausberger/beige";
 
-// Extend the ChannelAdapter interface to include sendPhoto support
+// Extend the ChannelAdapter interface to include sendPhoto and sendDocument support
 declare module "@matthias-hausberger/beige" {
   interface ChannelAdapter {
     sendPhoto(
       chatId: string,
       threadId: string | undefined,
       photoPath: string,
+      caption?: string
+    ): Promise<void>;
+    sendDocument?(
+      chatId: string,
+      threadId: string | undefined,
+      filePath: string,
       caption?: string
     ): Promise<void>;
   }
@@ -1257,6 +1263,35 @@ export function createPlugin(
         });
       }
     },
+
+    async sendDocument(
+      chatId: string,
+      threadId: string | undefined,
+      filePath: string,
+      caption?: string
+    ): Promise<void> {
+      // Resolve workspace-relative paths (e.g. "media/outbound/report.pdf")
+      // to an absolute host path so GrammY can read the file from disk.
+      const resolvedPath = filePath.startsWith("/")
+        ? filePath
+        : join(resolveWorkspaceDir(), filePath);
+
+      if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+        // Send document by URL directly
+        await bot.api.sendDocument(chatId, filePath, {
+          caption: caption,
+          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+        });
+      } else {
+        // Send document from local file using GrammY's InputFile
+        const { InputFile } = await import("grammy");
+        const filename = basename(resolvedPath);
+        await bot.api.sendDocument(chatId, new InputFile(resolvedPath, filename), {
+          caption: caption,
+          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+        });
+      }
+    },
   };
 
   // ── Tool handler: "telegram" ───────────────────────────────────────────
@@ -1269,10 +1304,12 @@ export function createPlugin(
       return {
         output:
           "Usage:\n" +
-          "  telegram sendMessage <chatId> <text>\n" +
-          "  telegram sendMessage <chatId> --thread <threadId> <text>\n" +
-          "  telegram sendPhoto <chatId> <photoPath> [caption]\n" +
-          "  telegram sendPhoto <chatId> --thread <threadId> <photoPath> [caption]",
+          "  telegram sendMessage  <chatId> <text>\n" +
+          "  telegram sendMessage  <chatId> --thread <threadId> <text>\n" +
+          "  telegram sendPhoto    <chatId> <photoPath> [caption]\n" +
+          "  telegram sendPhoto    <chatId> --thread <threadId> <photoPath> [caption]\n" +
+          "  telegram sendDocument <chatId> <filePath> [caption]\n" +
+          "  telegram sendDocument <chatId> --thread <threadId> <filePath> [caption]",
         exitCode: 1,
       };
     }
@@ -1363,9 +1400,59 @@ export function createPlugin(
         }
       }
 
+      case "sendDocument":
+      case "send_document": {
+        if (args.length < 3) {
+          return {
+            output:
+              "Usage: telegram sendDocument <chatId> <filePath> [caption]\n" +
+              "       telegram sendDocument <chatId> --thread <threadId> <filePath> [caption]\n\n" +
+              "filePath may be:\n" +
+              "  • An absolute path on the host (e.g. /home/user/.beige/agents/beige/workspace/report.pdf)\n" +
+              "  • A workspace-relative path     (e.g. media/outbound/report.pdf)\n" +
+              "  • A public URL                  (e.g. https://example.com/file.pdf)",
+            exitCode: 1,
+          };
+        }
+
+        const chatId = args[1];
+        let threadId: string | undefined;
+        let filePathIndex = 2;
+        let caption: string | undefined;
+
+        // Parse --thread option
+        if (args[2] === "--thread" && args.length >= 5) {
+          threadId = args[3];
+          filePathIndex = 4;
+        }
+
+        const filePath = args[filePathIndex];
+        if (!filePath) {
+          return { output: "Error: file path cannot be empty", exitCode: 1 };
+        }
+
+        // Extract caption if provided (everything after the file path)
+        if (args.length > filePathIndex + 1) {
+          caption = args.slice(filePathIndex + 1).join(" ");
+        }
+
+        try {
+          await channelAdapter.sendDocument!(chatId, threadId, filePath, caption);
+          return {
+            output: `Document sent to chat ${chatId}${threadId ? ` (thread ${threadId})` : ""}`,
+            exitCode: 0,
+          };
+        } catch (err) {
+          return {
+            output: `Failed to send document: ${err instanceof Error ? err.message : err}`,
+            exitCode: 1,
+          };
+        }
+      }
+
       default:
         return {
-          output: `Unknown subcommand: ${subcommand}\nAvailable: sendMessage, sendPhoto`,
+          output: `Unknown subcommand: ${subcommand}\nAvailable: sendMessage, sendPhoto, sendDocument`,
           exitCode: 1,
         };
     }
@@ -1382,12 +1469,14 @@ export function createPlugin(
       reg.tool({
         name: "telegram",
         description:
-          "Send messages and photos to Telegram chats. Use this to proactively notify users.",
+          "Send messages, photos, and files (PDFs, documents, etc.) to Telegram chats. Use this to proactively notify users.",
         commands: [
-          "sendMessage <chatId> <text>                  — Send a message to a chat",
-          "sendMessage <chatId> --thread <id> <text>     — Send to a specific thread",
-          "sendPhoto <chatId> <photoPath> [caption]      — Send a photo to a chat",
-          "sendPhoto <chatId> --thread <id> <photoPath> [caption] — Send photo to thread",
+          "sendMessage  <chatId> <text>                           — Send a message to a chat",
+          "sendMessage  <chatId> --thread <id> <text>             — Send to a specific thread",
+          "sendPhoto    <chatId> <photoPath> [caption]            — Send a photo to a chat",
+          "sendPhoto    <chatId> --thread <id> <photoPath> [caption] — Send photo to thread",
+          "sendDocument <chatId> <filePath> [caption]             — Send any file (PDF, etc.) to a chat",
+          "sendDocument <chatId> --thread <id> <filePath> [caption] — Send file to a specific thread",
         ],
         handler: telegramToolHandler,
       });
