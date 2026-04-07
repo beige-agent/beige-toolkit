@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname, basename, join, isAbsolute } from "node:path";
+import { resolve, dirname, basename, join, isAbsolute, extname } from "node:path";
 import type {
   PluginInstance,
   PluginContext,
@@ -148,7 +148,7 @@ export function createPlugin(
    * This creates a complete HTML document with CSS styling that supports
    * tables, code blocks, hyperlinks, and images.
    */
-  async function generateHtml(markdownContent: string, basePath: string): Promise<string> {
+  async function generateHtml(markdownContent: string, basePath: string, sessionContext?: SessionContext): Promise<string> {
     // Import marked dynamically to avoid issues if not installed
     let markedFn: any;
     try {
@@ -158,7 +158,43 @@ export function createPlugin(
       return "<html><body><h1>Error</h1><p>marked module not found. Please install dependencies.</p></body></html>";
     }
 
-    const htmlBody = markedFn(markdownContent);
+    const rawHtmlBody = markedFn(markdownContent);
+
+    // Rewrite local image src attributes to base64 data URIs so that
+    // Puppeteer can render them regardless of where the temp HTML file lives.
+    const htmlBody = rawHtmlBody.replace(
+      /<img([^>]*)\ssrc="([^"]+)"([^>]*)>/gi,
+      (_match: string, before: string, src: string, after: string) => {
+        // Skip remote URLs
+        if (/^https?:\/\//i.test(src) || src.startsWith("data:")) {
+          return `<img${before} src="${src}"${after}>`;
+        }
+
+        // Resolve the image path — /workspace/... and relative paths go through
+        // resolvePath so they map correctly to the host filesystem.
+        const imgPath = isAbsolute(src)
+          ? resolvePath(src, sessionContext)
+          : resolvePath(join(basePath, src), sessionContext);
+
+        if (!existsSync(imgPath)) {
+          // Leave unchanged if the file can't be found
+          return `<img${before} src="${src}"${after}>`;
+        }
+
+        const ext = extname(imgPath).toLowerCase().slice(1);
+        const mimeMap: Record<string, string> = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+        };
+        const mime = mimeMap[ext] ?? "image/png";
+        const data = readFileSync(imgPath).toString("base64");
+        return `<img${before} src="data:${mime};base64,${data}"${after}>`;
+      }
+    );
 
     // Create styled HTML document
     return `<!DOCTYPE html>
@@ -339,7 +375,7 @@ ${htmlBody}
 
       // Generate HTML from markdown
       const basePath = dirname(resolvedMarkdownPath);
-      const htmlContent = await generateHtml(markdownContent, basePath);
+      const htmlContent = await generateHtml(markdownContent, basePath, sessionContext);
 
       // Create a temporary HTML file
       const tempHtmlPath = resolvedPdfPath + ".temp.html";
