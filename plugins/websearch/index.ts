@@ -757,7 +757,9 @@ export function createPlugin(
     const command = args[0];
 
     try {
-      if (command === "search") {
+      if (command === "help" || command === "--help" || command === "-h") {
+        return { output: USAGE, exitCode: 0 };
+      } else if (command === "search") {
         const queryArgs = args.slice(1);
         let provider: string | undefined;
         let count: number | undefined;
