@@ -50,9 +50,6 @@
   "homepage": "https://github.com/matthias-hausberger/beige-toolkit#readme",
   "license": "MIT",
   "pnpm": {
-    "overrides": {
-      "@matthias-hausberger/beige": "link:../beige"
-    },
     "onlyBuiltDependencies": [
       "puppeteer"
     ]
