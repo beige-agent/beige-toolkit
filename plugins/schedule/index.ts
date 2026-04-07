@@ -469,6 +469,7 @@ type ParsedArgs =
   | ParsedIdCommand
   | ParsedList
   | ParsedHistory
+  | ParsedResume
   | ParsedUnknown;
 
 export function parseArgs(args: string[]): ParsedArgs {
@@ -1140,7 +1141,7 @@ function handleResume(
     if (newTime <= deps.now()) {
       return { output: `Error: datetime '${parsed.once}' is in the past.`, exitCode: 1 };
     }
-    entry.trigger.datetime = newTime.toISOString();
+    entry.trigger.at = newTime.toISOString();
   }
 
   // Re-compute nextRun
@@ -1152,11 +1153,11 @@ function handleResume(
     entry.nextRun = next.toISOString();
   } else {
     // One-off: use the (possibly updated) trigger time
-    const triggerTime = new Date(entry.trigger.datetime);
+    const triggerTime = new Date(entry.trigger.at);
     if (triggerTime <= deps.now()) {
       return { output: `Error: schedule '${id}' is a one-off whose trigger time has already passed. Use --once <ISO8601> to set a new time.`, exitCode: 1 };
     }
-    entry.nextRun = entry.trigger.datetime;
+    entry.nextRun = entry.trigger.at;
   }
 
   // Reset consecutive error counter when resuming from failed state
