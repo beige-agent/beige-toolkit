@@ -20,7 +20,7 @@
 
 import { Bot, type Context } from "grammy";
 import { createWriteStream, mkdirSync } from "fs";
-import { join, resolve, basename, isAbsolute } from "path";
+import { join, resolve, basename, isAbsolute, extname } from "path";
 import * as https from "https";
 import * as http from "http";
 import type {
@@ -1297,6 +1297,36 @@ export function createPlugin(
         // Resolve /workspace/... and relative paths to real host paths,
         // then wrap in InputFile so grammY uploads the file from disk.
         const resolvedPath = resolveFilePath(photoPath);
+
+        // Guard: Telegram's sendPhoto only accepts raster images (JPEG, PNG, WebP, GIF).
+        // SVGs and other vector/text formats cause IMAGE_PROCESS_FAILED at the API level.
+        // Detect by reading the first few bytes so we catch files with wrong extensions.
+        const { readFileSync } = await import("fs");
+        let fileHeader: Buffer;
+        try {
+          fileHeader = readFileSync(resolvedPath).subarray(0, 8);
+        } catch (err) {
+          throw new Error(
+            `Cannot read photo file at ${resolvedPath}: ${err instanceof Error ? err.message : err}. ` +
+            `Check that the file exists and the path is correct (workspace-relative or absolute).`
+          );
+        }
+        const isJpeg = fileHeader[0] === 0xff && fileHeader[1] === 0xd8;
+        const isPng  = fileHeader[0] === 0x89 && fileHeader[1] === 0x50 && fileHeader[2] === 0x4e && fileHeader[3] === 0x47;
+        const isWebp = fileHeader[0] === 0x52 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46 && fileHeader[3] === 0x46;
+        const isGif  = fileHeader[0] === 0x47 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46;
+        const looksLikeRaster = isJpeg || isPng || isWebp || isGif;
+
+        if (!looksLikeRaster) {
+          const ext = extname(resolvedPath).toLowerCase();
+          throw new Error(
+            `sendPhoto requires a raster image (JPEG, PNG, WebP, or GIF) but the file ` +
+            `"${basename(resolvedPath)}" does not appear to be one (extension: "${ext || "none"}", ` +
+            `magic bytes: ${fileHeader.toString("hex").slice(0, 8)}). ` +
+            `If this is an SVG or PDF, use sendDocument instead.`
+          );
+        }
+
         const { InputFile } = await import("grammy");
         await bot.api.sendPhoto(chatId, new InputFile(resolvedPath), {
           caption,
