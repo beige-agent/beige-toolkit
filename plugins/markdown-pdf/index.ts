@@ -127,6 +127,19 @@ export function createPlugin(
     return filePath;
   }
 
+  /**
+   * Convert a resolved host path back to a workspace-relative path.
+   * If the path is inside the workspace, returns /workspace/...; otherwise returns the original path.
+   */
+  function toWorkspacePath(resolvedPath: string, sessionContext?: SessionContext): string {
+    const workspaceRoot = sessionContext?.workspaceDir;
+    if (workspaceRoot && resolvedPath.startsWith(workspaceRoot)) {
+      const relPath = resolvedPath.slice(workspaceRoot.length).replace(/^\//, "");
+      return `/workspace/${relPath}`;
+    }
+    return resolvedPath;
+  }
+
   // ── HTML Generation ───────────────────────────────────────────────────
 
   /**
@@ -275,7 +288,7 @@ ${htmlBody}
     // Validate markdown file exists
     if (!existsSync(resolvedMarkdownPath)) {
       return {
-        output: `Error: markdown file not found: ${resolvedMarkdownPath}`,
+        output: `Error: markdown file not found: ${toWorkspacePath(resolvedMarkdownPath, sessionContext)}`,
         exitCode: 1,
       };
     }
@@ -371,7 +384,7 @@ ${htmlBody}
       );
 
       return {
-        output: `✅ PDF generated successfully\n\nInput: ${resolvedMarkdownPath}\nOutput: ${resolvedPdfPath}\n`,
+        output: `✅ PDF generated successfully\n\nInput: ${toWorkspacePath(resolvedMarkdownPath, sessionContext)}\nOutput: ${toWorkspacePath(resolvedPdfPath, sessionContext)}\n`,
         exitCode: 0,
       };
     } catch (err) {
