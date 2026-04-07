@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-04-01
+
+### Added — markdown-pdf plugin
+
+- **New plugin** for converting markdown files to PDF
+- **Full markdown support** — headers, lists, bold, italic, code blocks, tables, blockquotes
+- **Hyperlink preservation** — clickable links in PDF
+- **Local image support** — automatic embedding of images referenced relative to markdown file
+- **Workspace path resolution** — `/workspace/file.md` automatically resolved to host directory
+- **Customizable output** — configurable page format (A4, Letter, etc.) and margins
+- **Table rendering** — proper formatting with borders and alternating row colors
+- **Code highlighting** — styled code blocks with syntax-friendly formatting
+- **Dependencies** — uses `marked` for markdown parsing and `puppeteer` for PDF generation
+
 ## [0.1.1-beta5] - 2026-03-26
 
 ### Added — Telegram plugin
