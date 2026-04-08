@@ -22,6 +22,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname, basename, join, isAbsolute, extname } from "node:path";
+import { execSync } from "node:child_process";
 import type {
   PluginInstance,
   PluginContext,
@@ -42,6 +43,78 @@ interface SessionContext {
    * Set when the agent invokes the tool from a subdirectory of /workspace.
    */
   cwd?: string;
+}
+
+// ── Chrome / Chromium discovery ───────────────────────────────────────────────
+
+/**
+ * Known executable names and absolute paths where system-installed
+ * Chrome or Chromium binaries are typically found, ordered by likelihood.
+ *
+ * Covers:
+ *   - Debian / Ubuntu / Raspberry Pi OS  (chromium-browser, /usr/lib/chromium/chromium)
+ *   - Fedora / Arch                      (chromium, chromium-browser)
+ *   - macOS                              (/Applications/Google Chrome.app/.../MacOS/Google Chrome)
+ *   - Linux (Chrome)                     (google-chrome, google-chrome-stable)
+ *   - Alpine / other minimal distros     (/usr/bin/chromium-browser)
+ */
+const CHROME_CANDIDATES: string[] = [
+  // Common command-line names (resolved via `which` / `command -v`)
+  "chromium-browser",
+  "chromium",
+  "google-chrome-stable",
+  "google-chrome",
+  // Known absolute paths (Debian / Ubuntu / Raspberry Pi OS)
+  "/usr/lib/chromium/chromium",
+  "/usr/lib/chromium-browser/chromium-browser",
+  // macOS
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  // Linux misc
+  "/usr/bin/chromium-browser",
+  "/usr/bin/chromium",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/google-chrome",
+];
+
+/**
+ * Try to find a system-installed Chrome/Chromium binary.
+ *
+ * Returns the absolute path to the first executable that exists, or `null`
+ * if none of the candidates can be found.  This lets the plugin use the
+ * already-installed (correct-architecture) browser instead of the x86_64
+ * binary that Puppeteer may have downloaded for the wrong platform (e.g.
+ * on ARM-based Raspberry Pi).
+ */
+function findChromePath(): string | null {
+  for (const candidate of CHROME_CANDIDATES) {
+    // Absolute paths — just check if they exist and are executable
+    if (isAbsolute(candidate)) {
+      try {
+        if (existsSync(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // continue
+      }
+      continue;
+    }
+
+    // Bare command names — try to resolve via the shell
+    try {
+      const resolved = execSync(`command -v ${candidate} 2>/dev/null`, {
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+      if (resolved) {
+        return resolved;
+      }
+    } catch {
+      // command not found — continue
+    }
+  }
+
+  return null;
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -385,9 +458,29 @@ ${htmlBody}
 
       // Launch puppeteer and generate PDF
       const puppeteerLib = puppeteer.default || puppeteer;
+
+      // Prefer a system-installed Chrome/Chromium binary (correct
+      // architecture) over Puppeteer's bundled download which may be
+      // the wrong arch (e.g. x86_64 on an ARM Raspberry Pi).
+      const systemChrome = findChromePath();
+      if (systemChrome) {
+        ctx.log.info(`Using system browser: ${systemChrome}`);
+      } else {
+        ctx.log.info("No system Chrome/Chromium found — using Puppeteer bundled browser");
+      }
+
+      const launchArgs = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        // Common flags for headless rendering, especially on Linux / ARM
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+      ];
+
       const browser = await puppeteerLib.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        executablePath: systemChrome || undefined,
+        args: launchArgs,
       });
 
       try {
