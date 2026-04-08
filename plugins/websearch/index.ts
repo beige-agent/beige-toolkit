@@ -94,15 +94,17 @@ interface ExtractedContent {
   hasCodeBlocks: boolean;
 }
 
-enum SearchErrorType {
-  AUTH_FAILED = "auth_failed",
-  RATE_LIMITED = "rate_limited",
-  TIMEOUT = "timeout",
-  NETWORK_ERROR = "network_error",
-  INVALID_RESPONSE = "invalid_response",
-  NO_RESULTS = "no_results",
-  PROVIDER_DOWN = "provider_down",
-}
+const SearchErrorType = {
+  AUTH_FAILED: "auth_failed",
+  RATE_LIMITED: "rate_limited",
+  TIMEOUT: "timeout",
+  NETWORK_ERROR: "network_error",
+  INVALID_RESPONSE: "invalid_response",
+  NO_RESULTS: "no_results",
+  PROVIDER_DOWN: "provider_down",
+} as const;
+
+type SearchErrorType = typeof SearchErrorType[keyof typeof SearchErrorType];
 
 interface SearchError extends Error {
   type: SearchErrorType;
