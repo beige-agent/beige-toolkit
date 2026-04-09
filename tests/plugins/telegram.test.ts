@@ -31,6 +31,7 @@ const mockBotInstance = {
   }),
   start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
+  catch: vi.fn(),
   api: mockBotApi,
   _handlers: handlers,
 };

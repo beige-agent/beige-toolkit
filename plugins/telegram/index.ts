@@ -20,7 +20,7 @@
 
 import { Bot, type Context } from "grammy";
 import { createWriteStream, mkdirSync } from "fs";
-import { join, resolve, basename } from "path";
+import { join, resolve, basename, isAbsolute, extname } from "path";
 import * as https from "https";
 import * as http from "http";
 import type {
@@ -38,13 +38,33 @@ import {
   getErrorTag,
 } from "@matthias-hausberger/beige";
 
-// Extend the ChannelAdapter interface to include sendPhoto support
+// Extend the ChannelAdapter interface to include sendPhoto, sendDocument and sendAlbum support
 declare module "@matthias-hausberger/beige" {
   interface ChannelAdapter {
     sendPhoto(
       chatId: string,
       threadId: string | undefined,
       photoPath: string,
+      caption?: string
+    ): Promise<void>;
+    sendDocument?(
+      chatId: string,
+      threadId: string | undefined,
+      filePath: string,
+      caption?: string
+    ): Promise<void>;
+    /**
+     * Send multiple photos as a Telegram media group (album).
+     * Telegram limits each sendMediaGroup call to 2–10 items; larger albums
+     * are automatically split into consecutive batches of ≤10.
+     *
+     * @param photoPaths  Array of paths (workspace-relative, /workspace/…, absolute, or URL)
+     * @param caption     Optional caption attached to the first photo of the first batch
+     */
+    sendAlbum?(
+      chatId: string,
+      threadId: string | undefined,
+      photoPaths: string[],
       caption?: string
     ): Promise<void>;
   }
@@ -130,6 +150,44 @@ export function createPlugin(
     const beigeHome = resolve(ctx.dataDir, "../..");
     const defaultAgent = cfg.agentMapping.default;
     return join(beigeHome, "agents", defaultAgent, "workspace");
+  }
+
+  /**
+   * Resolve a file path (from an agent tool call) to an absolute host path.
+   *
+   * Agents running inside a sandbox see their workspace mounted at /workspace.
+   * The gateway passes the real host-side root via config.workspaceDir (or the
+   * derived beigeDir path).  Three cases are handled:
+   *
+   *   1. /workspace/...  →  <workspaceDir>/...
+   *      Strip the sandbox mount prefix and rebase onto the real workspace root.
+   *
+   *   2. relative path   →  <workspaceDir>/<path>
+   *      Resolved against the workspace root (no sub-cwd needed here since tool
+   *      calls always use workspace-relative paths like "media/outbound/report.pdf").
+   *
+   *   3. absolute path (not /workspace) → used as-is
+   *      Already a real host path (e.g. when called directly from the TUI).
+   *
+   * This mirrors the path resolution logic in the image plugin.
+   */
+  function resolveFilePath(filePath: string): string {
+    const workspaceRoot = resolveWorkspaceDir();
+    const sandboxMount = "/workspace";
+
+    // Case 1: agent sandbox /workspace prefix — strip and rebase onto host root
+    if (filePath.startsWith(sandboxMount + "/") || filePath === sandboxMount) {
+      const rel = filePath.slice(sandboxMount.length).replace(/^\//, "");
+      return join(workspaceRoot, rel);
+    }
+
+    // Case 2: relative path — resolve against workspace root
+    if (!isAbsolute(filePath)) {
+      return join(workspaceRoot, filePath);
+    }
+
+    // Case 3: absolute non-/workspace path — already a host path, use as-is
+    return filePath;
   }
 
   /**
@@ -1241,20 +1299,165 @@ export function createPlugin(
       photoPath: string,
       caption?: string
     ): Promise<void> {
-      // Check if photoPath is a URL or a local file
-      if (photoPath.startsWith('http://') || photoPath.startsWith('https://')) {
-        // Send photo by URL
+      const threadParams = threadId ? { message_thread_id: parseInt(threadId, 10) } : {};
+
+      if (photoPath.startsWith("http://") || photoPath.startsWith("https://")) {
+        // Send photo by URL — grammY accepts URL strings directly
         await bot.api.sendPhoto(chatId, photoPath, {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+          caption,
+          ...threadParams,
         });
       } else {
-        // Send photo from local file
-        // GrammY's InputFile can handle local file paths
-        await bot.api.sendPhoto(chatId, photoPath, {
-          caption: caption,
-          ...(threadId ? { message_thread_id: parseInt(threadId, 10) } : {}),
+        // Resolve /workspace/... and relative paths to real host paths,
+        // then wrap in InputFile so grammY uploads the file from disk.
+        const resolvedPath = resolveFilePath(photoPath);
+
+        // Guard: Telegram's sendPhoto only accepts raster images (JPEG, PNG, WebP, GIF).
+        // SVGs and other vector/text formats cause IMAGE_PROCESS_FAILED at the API level.
+        // Detect by reading the first few bytes so we catch files with wrong extensions.
+        const { readFileSync } = await import("fs");
+        let fileHeader: Buffer;
+        try {
+          fileHeader = readFileSync(resolvedPath).subarray(0, 8);
+        } catch (err) {
+          throw new Error(
+            `Cannot read photo file at ${resolvedPath}: ${err instanceof Error ? err.message : err}. ` +
+            `Check that the file exists and the path is correct (workspace-relative or absolute).`
+          );
+        }
+        const isJpeg = fileHeader[0] === 0xff && fileHeader[1] === 0xd8;
+        const isPng  = fileHeader[0] === 0x89 && fileHeader[1] === 0x50 && fileHeader[2] === 0x4e && fileHeader[3] === 0x47;
+        const isWebp = fileHeader[0] === 0x52 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46 && fileHeader[3] === 0x46;
+        const isGif  = fileHeader[0] === 0x47 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46;
+        const looksLikeRaster = isJpeg || isPng || isWebp || isGif;
+
+        if (!looksLikeRaster) {
+          const ext = extname(resolvedPath).toLowerCase();
+          throw new Error(
+            `sendPhoto requires a raster image (JPEG, PNG, WebP, or GIF) but the file ` +
+            `"${basename(resolvedPath)}" does not appear to be one (extension: "${ext || "none"}", ` +
+            `magic bytes: ${fileHeader.toString("hex").slice(0, 8)}). ` +
+            `If this is an SVG or PDF, use sendDocument instead.`
+          );
+        }
+
+        const { InputFile } = await import("grammy");
+        await bot.api.sendPhoto(chatId, new InputFile(resolvedPath), {
+          caption,
+          ...threadParams,
         });
+      }
+    },
+
+    async sendDocument(
+      chatId: string,
+      threadId: string | undefined,
+      filePath: string,
+      caption?: string
+    ): Promise<void> {
+      const threadParams = threadId ? { message_thread_id: parseInt(threadId, 10) } : {};
+
+      if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
+        // Send document by URL directly — grammY accepts URL strings
+        await bot.api.sendDocument(chatId, filePath, {
+          caption,
+          ...threadParams,
+        });
+      } else {
+        // Resolve /workspace/... and relative paths to real host paths,
+        // then wrap in InputFile so grammY uploads the file from disk.
+        const resolvedPath = resolveFilePath(filePath);
+        const { InputFile } = await import("grammy");
+        const filename = basename(resolvedPath);
+        await bot.api.sendDocument(chatId, new InputFile(resolvedPath, filename), {
+          caption,
+          ...threadParams,
+        });
+      }
+    },
+
+    async sendAlbum(
+      chatId: string,
+      threadId: string | undefined,
+      photoPaths: string[],
+      caption?: string
+    ): Promise<void> {
+      if (photoPaths.length === 0) {
+        throw new Error("sendAlbum requires at least one photo path");
+      }
+      if (photoPaths.length === 1) {
+        // Single photo — fall through to sendPhoto for proper validation + upload
+        await channelAdapter.sendPhoto(chatId, threadId, photoPaths[0], caption);
+        return;
+      }
+
+      const { InputFile } = await import("grammy");
+      const { readFileSync } = await import("fs");
+      const threadParams = threadId ? { message_thread_id: parseInt(threadId, 10) } : {};
+
+      // Telegram's sendMediaGroup limit: 2–10 items per call.
+      // Split larger albums into consecutive batches; caption goes on first item of first batch only.
+      const BATCH_SIZE = 10;
+
+      /**
+       * Resolve a single photo path and validate it is a raster image.
+       * Returns an InputFile (local) or a URL string (remote).
+       */
+      async function resolvePhotoInput(photoPath: string): Promise<{ type: "url"; url: string } | { type: "file"; file: InstanceType<typeof InputFile>; resolvedPath: string }> {
+        if (photoPath.startsWith("http://") || photoPath.startsWith("https://")) {
+          return { type: "url", url: photoPath };
+        }
+
+        const resolvedPath = resolveFilePath(photoPath);
+
+        // Same magic-bytes raster guard as sendPhoto
+        let fileHeader: Buffer;
+        try {
+          fileHeader = readFileSync(resolvedPath).subarray(0, 8);
+        } catch (err) {
+          throw new Error(
+            `Cannot read photo file at ${resolvedPath}: ${err instanceof Error ? err.message : err}. ` +
+            `Check that the file exists and the path is correct (workspace-relative or absolute).`
+          );
+        }
+        const isJpeg = fileHeader[0] === 0xff && fileHeader[1] === 0xd8;
+        const isPng  = fileHeader[0] === 0x89 && fileHeader[1] === 0x50 && fileHeader[2] === 0x4e && fileHeader[3] === 0x47;
+        const isWebp = fileHeader[0] === 0x52 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46 && fileHeader[3] === 0x46;
+        const isGif  = fileHeader[0] === 0x47 && fileHeader[1] === 0x49 && fileHeader[2] === 0x46;
+
+        if (!isJpeg && !isPng && !isWebp && !isGif) {
+          const ext = extname(resolvedPath).toLowerCase();
+          throw new Error(
+            `sendAlbum requires raster images (JPEG, PNG, WebP, or GIF) but "${basename(resolvedPath)}" ` +
+            `does not appear to be one (extension: "${ext || "none"}", magic bytes: ${fileHeader.toString("hex").slice(0, 8)}). ` +
+            `If this is an SVG or PDF, use sendDocument instead.`
+          );
+        }
+
+        return { type: "file", file: new InputFile(resolvedPath), resolvedPath };
+      }
+
+      // Resolve all paths upfront so any validation errors surface before we start uploading
+      const resolved = await Promise.all(photoPaths.map(resolvePhotoInput));
+
+      // Send in batches of up to BATCH_SIZE
+      for (let i = 0; i < resolved.length; i += BATCH_SIZE) {
+        const batch = resolved.slice(i, i + BATCH_SIZE);
+        const isFirstBatch = i === 0;
+
+        // Build the InputMediaPhoto array for this batch.
+        // Telegram only accepts the caption on the first item of the first batch.
+        const media = batch.map((item, batchIndex): { type: "photo"; media: string | InstanceType<typeof InputFile>; caption?: string } => {
+          const isFirstItem = isFirstBatch && batchIndex === 0;
+          const mediaSource = item.type === "url" ? item.url : item.file;
+          return {
+            type: "photo",
+            media: mediaSource,
+            ...(isFirstItem && caption ? { caption } : {}),
+          };
+        });
+
+        await bot.api.sendMediaGroup(chatId, media, threadParams);
       }
     },
   };
@@ -1269,10 +1472,14 @@ export function createPlugin(
       return {
         output:
           "Usage:\n" +
-          "  telegram sendMessage <chatId> <text>\n" +
-          "  telegram sendMessage <chatId> --thread <threadId> <text>\n" +
-          "  telegram sendPhoto <chatId> <photoPath> [caption]\n" +
-          "  telegram sendPhoto <chatId> --thread <threadId> <photoPath> [caption]",
+          "  telegram sendMessage  <chatId> <text>\n" +
+          "  telegram sendMessage  <chatId> --thread <threadId> <text>\n" +
+          "  telegram sendPhoto    <chatId> <photoPath> [caption]\n" +
+          "  telegram sendPhoto    <chatId> --thread <threadId> <photoPath> [caption]\n" +
+          "  telegram sendDocument <chatId> <filePath> [caption]\n" +
+          "  telegram sendDocument <chatId> --thread <threadId> <filePath> [caption]\n" +
+          "  telegram sendAlbum    <chatId> <path1> <path2> [... pathN] [--caption <text>]\n" +
+          "  telegram sendAlbum    <chatId> --thread <threadId> <path1> <path2> [... pathN] [--caption <text>]",
         exitCode: 1,
       };
     }
@@ -1363,9 +1570,125 @@ export function createPlugin(
         }
       }
 
+      case "sendDocument":
+      case "send_document": {
+        if (args.length < 3) {
+          return {
+            output:
+              "Usage: telegram sendDocument <chatId> <filePath> [caption]\n" +
+              "       telegram sendDocument <chatId> --thread <threadId> <filePath> [caption]\n\n" +
+              "filePath may be:\n" +
+              "  • An absolute path on the host (e.g. /home/user/.beige/agents/beige/workspace/report.pdf)\n" +
+              "  • A workspace-relative path     (e.g. media/outbound/report.pdf)\n" +
+              "  • A public URL                  (e.g. https://example.com/file.pdf)",
+            exitCode: 1,
+          };
+        }
+
+        const chatId = args[1];
+        let threadId: string | undefined;
+        let filePathIndex = 2;
+        let caption: string | undefined;
+
+        // Parse --thread option
+        if (args[2] === "--thread" && args.length >= 5) {
+          threadId = args[3];
+          filePathIndex = 4;
+        }
+
+        const filePath = args[filePathIndex];
+        if (!filePath) {
+          return { output: "Error: file path cannot be empty", exitCode: 1 };
+        }
+
+        // Extract caption if provided (everything after the file path)
+        if (args.length > filePathIndex + 1) {
+          caption = args.slice(filePathIndex + 1).join(" ");
+        }
+
+        try {
+          await channelAdapter.sendDocument!(chatId, threadId, filePath, caption);
+          return {
+            output: `Document sent to chat ${chatId}${threadId ? ` (thread ${threadId})` : ""}`,
+            exitCode: 0,
+          };
+        } catch (err) {
+          return {
+            output: `Failed to send document: ${err instanceof Error ? err.message : err}`,
+            exitCode: 1,
+          };
+        }
+      }
+
+      case "sendAlbum":
+      case "send_album": {
+        // Usage: telegram sendAlbum <chatId> [--thread <threadId>] <path1> <path2> [...pathN] [--caption <text>]
+        //
+        // Paths and caption can be interspersed in any order after the chatId/thread params.
+        // --caption consumes the rest of the argument list as the caption string so it must
+        // come after all paths (or use quotes in the shell).
+        const chatId = args[1];
+        if (!chatId) {
+          return {
+            output:
+              "Usage: telegram sendAlbum <chatId> <path1> <path2> [... pathN] [--caption <text>]\n" +
+              "       telegram sendAlbum <chatId> --thread <threadId> <path1> <path2> [... pathN] [--caption <text>]\n\n" +
+              "At least 2 photos are recommended (Telegram groups 2–10 photos per album batch).\n" +
+              "Paths may be workspace-relative, /workspace/…, absolute, or public URLs.",
+            exitCode: 1,
+          };
+        }
+
+        let threadId: string | undefined;
+        let argStart = 2;
+
+        // Parse optional --thread <threadId>
+        if (args[2] === "--thread" && args[3]) {
+          threadId = args[3];
+          argStart = 4;
+        }
+
+        // Collect remaining args, splitting at --caption to extract optional caption
+        const remaining = args.slice(argStart);
+        let caption: string | undefined;
+        const photoPaths: string[] = [];
+
+        for (let i = 0; i < remaining.length; i++) {
+          if (remaining[i] === "--caption") {
+            // Everything after --caption is the caption string
+            caption = remaining.slice(i + 1).join(" ") || undefined;
+            break;
+          }
+          photoPaths.push(remaining[i]);
+        }
+
+        if (photoPaths.length === 0) {
+          return {
+            output: "Error: sendAlbum requires at least one photo path",
+            exitCode: 1,
+          };
+        }
+
+        try {
+          await channelAdapter.sendAlbum!(chatId, threadId, photoPaths, caption);
+          return {
+            output:
+              `Album sent to chat ${chatId}${threadId ? ` (thread ${threadId})` : ""}: ` +
+              `${photoPaths.length} photo${photoPaths.length === 1 ? "" : "s"}` +
+              (photoPaths.length > 10 ? ` (split into ${Math.ceil(photoPaths.length / 10)} batches)` : ""),
+            exitCode: 0,
+          };
+        } catch (err) {
+          return {
+            output: `Failed to send album: ${err instanceof Error ? err.message : err}`,
+            exitCode: 1,
+          };
+        }
+      }
+
       default:
         return {
-          output: `Unknown subcommand: ${subcommand}\nAvailable: sendMessage, sendPhoto`,
+          output: `Unknown subcommand: ${subcommand}\nAvailable: sendMessage, sendPhoto, sendDocument, sendAlbum`,
           exitCode: 1,
         };
     }
@@ -1382,12 +1705,16 @@ export function createPlugin(
       reg.tool({
         name: "telegram",
         description:
-          "Send messages and photos to Telegram chats. Use this to proactively notify users.",
+          "Send messages, photos, albums, and files (PDFs, documents, etc.) to Telegram chats. Use this to proactively notify users.",
         commands: [
-          "sendMessage <chatId> <text>                  — Send a message to a chat",
-          "sendMessage <chatId> --thread <id> <text>     — Send to a specific thread",
-          "sendPhoto <chatId> <photoPath> [caption]      — Send a photo to a chat",
-          "sendPhoto <chatId> --thread <id> <photoPath> [caption] — Send photo to thread",
+          "sendMessage  <chatId> <text>                                        — Send a message to a chat",
+          "sendMessage  <chatId> --thread <id> <text>                          — Send to a specific thread",
+          "sendPhoto    <chatId> <photoPath> [caption]                         — Send a single photo",
+          "sendPhoto    <chatId> --thread <id> <photoPath> [caption]           — Send photo to thread",
+          "sendAlbum    <chatId> <p1> <p2> [...pN] [--caption <text>]          — Send multiple photos as one album (batches of 10)",
+          "sendAlbum    <chatId> --thread <id> <p1> <p2> [...pN] [--caption <text>] — Send album to thread",
+          "sendDocument <chatId> <filePath> [caption]                          — Send any file (PDF, etc.)",
+          "sendDocument <chatId> --thread <id> <filePath> [caption]            — Send file to a specific thread",
         ],
         handler: telegramToolHandler,
       });

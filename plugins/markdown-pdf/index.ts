@@ -21,7 +21,8 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname, basename, join, isAbsolute } from "node:path";
+import { resolve, dirname, basename, join, isAbsolute, extname } from "node:path";
+import { execSync } from "node:child_process";
 import type {
   PluginInstance,
   PluginContext,
@@ -42,6 +43,78 @@ interface SessionContext {
    * Set when the agent invokes the tool from a subdirectory of /workspace.
    */
   cwd?: string;
+}
+
+// ── Chrome / Chromium discovery ───────────────────────────────────────────────
+
+/**
+ * Known executable names and absolute paths where system-installed
+ * Chrome or Chromium binaries are typically found, ordered by likelihood.
+ *
+ * Covers:
+ *   - Debian / Ubuntu / Raspberry Pi OS  (chromium-browser, /usr/lib/chromium/chromium)
+ *   - Fedora / Arch                      (chromium, chromium-browser)
+ *   - macOS                              (/Applications/Google Chrome.app/.../MacOS/Google Chrome)
+ *   - Linux (Chrome)                     (google-chrome, google-chrome-stable)
+ *   - Alpine / other minimal distros     (/usr/bin/chromium-browser)
+ */
+const CHROME_CANDIDATES: string[] = [
+  // Common command-line names (resolved via `which` / `command -v`)
+  "chromium-browser",
+  "chromium",
+  "google-chrome-stable",
+  "google-chrome",
+  // Known absolute paths (Debian / Ubuntu / Raspberry Pi OS)
+  "/usr/lib/chromium/chromium",
+  "/usr/lib/chromium-browser/chromium-browser",
+  // macOS
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  // Linux misc
+  "/usr/bin/chromium-browser",
+  "/usr/bin/chromium",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/google-chrome",
+];
+
+/**
+ * Try to find a system-installed Chrome/Chromium binary.
+ *
+ * Returns the absolute path to the first executable that exists, or `null`
+ * if none of the candidates can be found.  This lets the plugin use the
+ * already-installed (correct-architecture) browser instead of the x86_64
+ * binary that Puppeteer may have downloaded for the wrong platform (e.g.
+ * on ARM-based Raspberry Pi).
+ */
+function findChromePath(): string | null {
+  for (const candidate of CHROME_CANDIDATES) {
+    // Absolute paths — just check if they exist and are executable
+    if (isAbsolute(candidate)) {
+      try {
+        if (existsSync(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // continue
+      }
+      continue;
+    }
+
+    // Bare command names — try to resolve via the shell
+    try {
+      const resolved = execSync(`command -v ${candidate} 2>/dev/null`, {
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+      if (resolved) {
+        return resolved;
+      }
+    } catch {
+      // command not found — continue
+    }
+  }
+
+  return null;
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -127,6 +200,19 @@ export function createPlugin(
     return filePath;
   }
 
+  /**
+   * Convert a resolved host path back to a workspace-relative path.
+   * If the path is inside the workspace, returns /workspace/...; otherwise returns the original path.
+   */
+  function toWorkspacePath(resolvedPath: string, sessionContext?: SessionContext): string {
+    const workspaceRoot = sessionContext?.workspaceDir;
+    if (workspaceRoot && resolvedPath.startsWith(workspaceRoot)) {
+      const relPath = resolvedPath.slice(workspaceRoot.length).replace(/^\//, "");
+      return `/workspace/${relPath}`;
+    }
+    return resolvedPath;
+  }
+
   // ── HTML Generation ───────────────────────────────────────────────────
 
   /**
@@ -135,17 +221,53 @@ export function createPlugin(
    * This creates a complete HTML document with CSS styling that supports
    * tables, code blocks, hyperlinks, and images.
    */
-  function generateHtml(markdownContent: string, basePath: string): string {
+  async function generateHtml(markdownContent: string, basePath: string, sessionContext?: SessionContext): Promise<string> {
     // Import marked dynamically to avoid issues if not installed
-    let marked: any;
+    let markedFn: any;
     try {
-      marked = require("marked");
+      const markedModule: any = await import("marked");
+      markedFn = markedModule.marked || markedModule;
     } catch {
       return "<html><body><h1>Error</h1><p>marked module not found. Please install dependencies.</p></body></html>";
     }
 
-    const markedLib = marked.default || marked;
-    const htmlBody = markedLib(markdownContent);
+    const rawHtmlBody = markedFn(markdownContent);
+
+    // Rewrite local image src attributes to base64 data URIs so that
+    // Puppeteer can render them regardless of where the temp HTML file lives.
+    const htmlBody = rawHtmlBody.replace(
+      /<img([^>]*)\ssrc="([^"]+)"([^>]*)>/gi,
+      (_match: string, before: string, src: string, after: string) => {
+        // Skip remote URLs
+        if (/^https?:\/\//i.test(src) || src.startsWith("data:")) {
+          return `<img${before} src="${src}"${after}>`;
+        }
+
+        // Resolve the image path — /workspace/... and relative paths go through
+        // resolvePath so they map correctly to the host filesystem.
+        const imgPath = isAbsolute(src)
+          ? resolvePath(src, sessionContext)
+          : resolvePath(join(basePath, src), sessionContext);
+
+        if (!existsSync(imgPath)) {
+          // Leave unchanged if the file can't be found
+          return `<img${before} src="${src}"${after}>`;
+        }
+
+        const ext = extname(imgPath).toLowerCase().slice(1);
+        const mimeMap: Record<string, string> = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          gif: "image/gif",
+          webp: "image/webp",
+          svg: "image/svg+xml",
+        };
+        const mime = mimeMap[ext] ?? "image/png";
+        const data = readFileSync(imgPath).toString("base64");
+        return `<img${before} src="data:${mime};base64,${data}"${after}>`;
+      }
+    );
 
     // Create styled HTML document
     return `<!DOCTYPE html>
@@ -224,6 +346,8 @@ export function createPlugin(
     }
     img {
       max-width: 100%;
+      max-height: 30vh;
+      width: auto;
       height: auto;
       display: block;
       margin: 1em 0;
@@ -275,7 +399,7 @@ ${htmlBody}
     // Validate markdown file exists
     if (!existsSync(resolvedMarkdownPath)) {
       return {
-        output: `Error: markdown file not found: ${resolvedMarkdownPath}`,
+        output: `Error: markdown file not found: ${toWorkspacePath(resolvedMarkdownPath, sessionContext)}`,
         exitCode: 1,
       };
     }
@@ -326,7 +450,7 @@ ${htmlBody}
 
       // Generate HTML from markdown
       const basePath = dirname(resolvedMarkdownPath);
-      const htmlContent = generateHtml(markdownContent, basePath);
+      const htmlContent = await generateHtml(markdownContent, basePath, sessionContext);
 
       // Create a temporary HTML file
       const tempHtmlPath = resolvedPdfPath + ".temp.html";
@@ -334,13 +458,48 @@ ${htmlBody}
 
       // Launch puppeteer and generate PDF
       const puppeteerLib = puppeteer.default || puppeteer;
+
+      // Prefer a system-installed Chrome/Chromium binary (correct
+      // architecture) over Puppeteer's bundled download which may be
+      // the wrong arch (e.g. x86_64 on an ARM Raspberry Pi).
+      const systemChrome = findChromePath();
+      if (systemChrome) {
+        ctx.log.info(`Using system browser: ${systemChrome}`);
+      } else {
+        ctx.log.info("No system Chrome/Chromium found — using Puppeteer bundled browser");
+      }
+
+      const launchArgs = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        // Common flags for headless rendering, especially on Linux / ARM
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+      ];
+
       const browser = await puppeteerLib.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        executablePath: systemChrome || undefined,
+        args: launchArgs,
       });
 
       try {
         const page = await browser.newPage();
+
+        // Set viewport to match the paper size so that vh/vw CSS units
+        // correctly represent a fraction of the page height/width.
+        // Values are in px at 96 dpi (CSS reference pixel).
+        const pageSizePx: Record<string, { width: number; height: number }> = {
+          a4:     { width: 794,  height: 1123 },
+          letter: { width: 816,  height: 1056 },
+          legal:  { width: 816,  height: 1344 },
+          a3:     { width: 1123, height: 1587 },
+          a5:     { width: 559,  height: 794  },
+          tabloid:{ width: 1056, height: 1632 },
+        };
+        const formatKey = (finalOptions.format as string ?? "A4").toLowerCase();
+        const viewportSize = pageSizePx[formatKey] ?? pageSizePx["a4"];
+        await page.setViewport(viewportSize);
 
         // Load the HTML file
         await page.goto(`file://${tempHtmlPath}`, {
@@ -371,7 +530,7 @@ ${htmlBody}
       );
 
       return {
-        output: `✅ PDF generated successfully\n\nInput: ${resolvedMarkdownPath}\nOutput: ${resolvedPdfPath}\n`,
+        output: `✅ PDF generated successfully\n\nInput: ${toWorkspacePath(resolvedMarkdownPath, sessionContext)}\nOutput: ${toWorkspacePath(resolvedPdfPath, sessionContext)}\n`,
         exitCode: 0,
       };
     } catch (err) {
