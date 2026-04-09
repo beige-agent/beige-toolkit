@@ -52,7 +52,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 ```json5
 {
   plugins: {
-    markdown-pdf: {
+    "markdown-pdf": {
       config: {
         format: "A4",
         margins: {
@@ -74,7 +74,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 ```json5
 {
   plugins: {
-    markdown-pdf: {
+    "markdown-pdf": {
       config: {
         format: "Letter",
         margins: {
@@ -94,7 +94,7 @@ beige tools install github:matthias-hausberger/beige-toolkit
 ```json5
 {
   plugins: {
-    markdown-pdf: {
+    "markdown-pdf": {
       config: {
         displayHeaderFooter: true,
         format: "A4",

@@ -5,7 +5,7 @@ Telegram channel and messaging tool for Beige agents.
 ## What It Provides
 
 - **Channel**: A GrammY-based Telegram bot that routes user messages to agents and supports concurrent sessions per thread
-- **Tool**: `telegram` command for agents to send proactive messages
+- **Tool**: `telegram` command for agents to send proactive messages, photos, albums, and files
 
 ## Configuration
 
@@ -25,6 +25,10 @@ Add to your `config.json5`:
           verbose: false,                   // Show tool-call notifications
           streaming: true,                  // Stream responses in real-time
         },
+        // Optional: absolute host-side path to the agent workspace.
+        // Defaults to <beigeDir>/agents/<defaultAgent>/workspace derived from ctx.dataDir.
+        // Only needed if your setup places the workspace at a non-standard location.
+        // workspaceDir: "/custom/path/to/workspace",
       },
     },
   },
@@ -165,16 +169,110 @@ LLM errors (invalid API key, rate limits, model unavailable, etc.) are forwarded
 | Context too long | 📏 This conversation is getting too long for the AI's memory. |
 | Network issue | 🌐 Network connection issue. Please try again. |
 
+## Inbound Media
+
+When a user sends a photo, video, audio, voice message, or document to the bot, it is automatically downloaded to `<workspaceDir>/media/inbound/` on the host. The agent receives a message like:
+
+```
+[Image sent to chat: media/inbound/photo-2026-04-07_12-00-00.jpg]
+Caption: look at this
+```
+
+The path is workspace-relative so the agent can read it using its standard file tools.
+
 ## Tool Usage
 
-Agents can send messages proactively:
+Agents can send messages, photos, albums, and files proactively using the `telegram` tool.
+
+### Path Resolution
+
+All file path arguments (for `sendPhoto`, `sendAlbum`, `sendDocument`) are resolved in this order:
+
+1. **`/workspace/…`** — sandbox-relative paths are rebased onto the real host workspace root
+2. **Relative paths** (e.g. `media/outbound/report.pdf`) — resolved against the workspace root
+3. **Absolute paths** (not under `/workspace`) — used as-is (already a host path)
+4. **`http://` / `https://` URLs** — sent directly via URL, no local file I/O
+
+### `sendMessage`
+
+Send a text message to a chat. Messages longer than 4096 characters are automatically split.
 
 ```
 telegram sendMessage <chatId> <text>
 telegram sendMessage <chatId> --thread <threadId> <text>
 ```
 
-Long messages (>4096 characters) are automatically split into multiple Telegram messages.
+```bash
+telegram sendMessage 123456789 Build completed successfully!
+telegram sendMessage -1001234567890 --thread 42 Deployment finished.
+```
+
+### `sendPhoto`
+
+Send a single raster image (JPEG, PNG, WebP, or GIF). SVG and other vector formats are rejected with a clear error — use `sendDocument` for those instead.
+
+```
+telegram sendPhoto <chatId> <photoPath> [caption]
+telegram sendPhoto <chatId> --thread <threadId> <photoPath> [caption]
+```
+
+```bash
+# Workspace-relative path
+telegram sendPhoto 123456789 media/outbound/chart.png "Q1 results"
+
+# Sandbox path (automatically remapped to host workspace)
+telegram sendPhoto 123456789 /workspace/screenshot.jpg
+
+# Public URL
+telegram sendPhoto 123456789 https://example.com/banner.jpg "Check this out"
+```
+
+### `sendAlbum`
+
+Send multiple photos as a single **grouped album** (Telegram media group). The user sees a grid/strip of images in one chat message rather than individual messages.
+
+```
+telegram sendAlbum <chatId> <path1> <path2> [... pathN] [--caption <text>]
+telegram sendAlbum <chatId> --thread <threadId> <path1> <path2> [... pathN] [--caption <text>]
+```
+
+- Telegram limits each media group to **2–10 items**. Larger albums are automatically split into consecutive batches of ≤10.
+- The `--caption` is applied to the **first photo of the first batch** only (Telegram's restriction).
+- All paths follow the same resolution rules as `sendPhoto`. Each file is validated as a raster image before uploading.
+
+```bash
+# Simple 3-photo album
+telegram sendAlbum 123456789 photo1.jpg photo2.jpg photo3.jpg
+
+# With caption
+telegram sendAlbum 123456789 photo1.jpg photo2.jpg photo3.jpg --caption "Holiday snaps 🌴"
+
+# Large album — auto-split into batches of 10
+telegram sendAlbum 123456789 p01.jpg p02.jpg p03.jpg p04.jpg p05.jpg p06.jpg p07.jpg p08.jpg p09.jpg p10.jpg p11.jpg p12.jpg
+
+# To a forum thread
+telegram sendAlbum -1001234567890 --thread 5 img1.png img2.png --caption "Results"
+```
+
+### `sendDocument`
+
+Send any file as a Telegram document attachment (PDF, zip, SVG, spreadsheet, etc.). The file is delivered as-is without Telegram processing it.
+
+```
+telegram sendDocument <chatId> <filePath> [caption]
+telegram sendDocument <chatId> --thread <threadId> <filePath> [caption]
+```
+
+```bash
+# Workspace-relative path
+telegram sendDocument 123456789 media/outbound/report.pdf "Monthly report"
+
+# Sandbox path
+telegram sendDocument 123456789 /workspace/export.zip
+
+# Public URL
+telegram sendDocument 123456789 https://example.com/data.csv "Latest dataset"
+```
 
 ## Session Model
 
