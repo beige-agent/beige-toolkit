@@ -1,0 +1,30 @@
+{
+  "name": "websearch",
+  "version": "1.0.0",
+  "description": "Multi-provider web search with provider priority, automatic fallback, and local content extraction",
+  "author": "Matthias Hausberger",
+  "license": "MIT",
+  "keywords": [
+    "search",
+    "web",
+    "tavily",
+    "brave",
+    "exa",
+    "content-extraction",
+    "ai"
+  ],
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^29.0.1",
+    "turndown": "^7.2.2",
+    "turndown-plugin-gfm": "^1.0.2"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.1",
+    "@types/turndown": "^5.0.6",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@matthias-hausberger/beige": "*"
+  }
+}
